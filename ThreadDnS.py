@@ -209,6 +209,8 @@ class DnSThread(QThread):
         return self.ui.Save.isChecked()
 
     def current_aline_avg(self):
+        if getattr(self, "current_acq_mode", None) == AcqTypes.CONTINUOUS_KX:
+            return 1
         return max(1, int(self.ui.AlineAVG.value()))
 
     def current_y_pixels(self):

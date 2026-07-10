@@ -411,6 +411,11 @@ class GPUThread(QThread):
     def current_kx_display_enabled(self):
         return getattr(self.item, "acq_mode", None) == AcqTypes.CONTINUOUS_KX
 
+    def current_fft_output_range(self, samples, pixel_range):
+        if self.current_kx_display_enabled():
+            return int(samples)
+        return int(pixel_range)
+
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
         depth_data = fft_data[:, pixel_start:pixel_start + pixel_range]
         return xp.absolute(depth_data)
@@ -590,6 +595,7 @@ class GPUThread(QThread):
         # get depth pixels after FFT
         Pixel_start = self.current_depth_start()
         Pixel_range = self.current_depth_range()
+        output_range = self.current_fft_output_range(samples, Pixel_range)
         slot_shape = self.Memory[memory_slot].shape
         valid_input_frames = self.valid_input_frame_count(memory_slot)
         shape = (valid_input_frames, slot_shape[1], slot_shape[2])
@@ -601,7 +607,7 @@ class GPUThread(QThread):
         chunk_frames = self.gpu_fft_chunk_frames(effective_frames)
         background_reference_gpu = self.determine_background_gpu(memory_slot)
         output_dtype = np.float32
-        self.data_CPU = np.empty((effective_frames, shape[1], Pixel_range), dtype=output_dtype)
+        self.data_CPU = np.empty((effective_frames, shape[1], output_range), dtype=output_dtype)
         dynamic_gpu_stack = None
         if self.should_run_realtime_dynamic():
             stack_start = self.gpu_timing_start()
@@ -732,18 +738,25 @@ class GPUThread(QThread):
 
         if self.interp:
             self.data_CPU = self.interpolate_cpu(self.data_CPU)
-            self.data_CPU = np.fft.fft(self.data_CPU * self.dispersion, axis=1) / samples
-        else:
-            self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
 
-        self.data_CPU = self.select_fft_depth_result(self.data_CPU, pixel_start, pixel_range, np)
-        self.data_CPU = np.float32(self.data_CPU)
-        self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], pixel_range)
+        if self.current_kx_display_enabled():
+            self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], samples)
+            self.data_CPU = np.fft.fftshift(np.fft.fft(self.data_CPU, axis=1), axes=1)
+            self.data_CPU = np.log1p(np.absolute(self.data_CPU)).astype(np.float32, copy=False)
+        else:
+            if self.interp:
+                self.data_CPU = np.fft.fft(self.data_CPU * self.dispersion, axis=1) / samples
+            else:
+                self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
+            self.data_CPU = self.select_fft_depth_result(self.data_CPU, pixel_start, pixel_range, np)
+            self.data_CPU = np.float32(self.data_CPU)
+            self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], pixel_range)
         if self.current_dynamic_enabled():
             self.apply_post_fft_dynamic_normalization_cpu(self.data_CPU)
         else:
             self.data_CPU *= np.float32(self.AMPLIFICATION)
-        self.apply_background_x_normalization_cpu(self.data_CPU)
+        if not self.current_kx_display_enabled():
+            self.apply_background_x_normalization_cpu(self.data_CPU)
 
         if self.should_run_realtime_dynamic():
             dyn = self.compute_realtime_dynamic_cpu(
@@ -1383,7 +1396,8 @@ class GPUThread(QThread):
             self.gpu_timing_end(timing, "select_depth_result", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
-        data_gpu = data_gpu.reshape(output_frames, chunk_shape[1], Pixel_range)
+        output_range = self.current_fft_output_range(samples, Pixel_range)
+        data_gpu = data_gpu.reshape(output_frames, chunk_shape[1], output_range)
         self.gpu_timing_end(timing, "reshape_depth", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
@@ -1393,9 +1407,10 @@ class GPUThread(QThread):
             data_gpu *= cupy.float32(self.AMPLIFICATION)
         self.gpu_timing_end(timing, "post_fft_scaling", step_start, stream)
 
-        step_start = self.gpu_timing_start(stream)
-        self.apply_background_x_normalization_gpu(data_gpu)
-        self.gpu_timing_end(timing, "background_x_normalization", step_start, stream)
+        if not self.current_kx_display_enabled():
+            step_start = self.gpu_timing_start(stream)
+            self.apply_background_x_normalization_gpu(data_gpu)
+            self.gpu_timing_end(timing, "background_x_normalization", step_start, stream)
 
         if self.gpu_profile_timing_print_chunks and chunk_start is not None:
             self.gpu_timing_synchronize(stream)
