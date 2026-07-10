@@ -97,9 +97,9 @@ HOLO_CENTER_ZERO_DEPTH_IN_DISPLAY = True
 # Valid values: "linear", "log", "sqrt".
 CONTINUOUS_KX_DISPLAY_SCALE = "linear"
 
-# Set True to normalize each ContinuousKX frame by its own maximum before the
-# GUI contrast scaling. Usually False is better when comparing tilt strength.
-CONTINUOUS_KX_NORMALIZE_PER_FRAME = False
+# Set True to normalize each ContinuousKX frame to the full XZ contrast-control
+# range, using the maximum value of the XZmax UI object as the target scale.
+CONTINUOUS_KX_NORMALIZE_PER_FRAME = True
 
 # Set True to print the ContinuousKX scaling choice once at startup.
 CONTINUOUS_KX_PRINT_INFO = True
@@ -440,6 +440,11 @@ class GPUThread(QThread):
             return int(samples)
         return int(pixel_range)
 
+    def kx_display_target_max(self):
+        if hasattr(self.ui, "XZmax") and hasattr(self.ui.XZmax, "maximum"):
+            return max(1.0, float(self.ui.XZmax.maximum()))
+        return 4096.0
+
     def scale_kx_display_cpu(self, kx_data):
         scale = str(getattr(self, "kx_display_scale", "linear")).lower()
         mag = np.absolute(kx_data).astype(np.float32, copy=False)
@@ -451,10 +456,11 @@ class GPUThread(QThread):
             if getattr(self, "kx_print_info", False) and not getattr(self, "kx_info_printed", False):
                 print(f"Unknown ContinuousKX display scale '{scale}', using linear.")
             scale = "linear"
+        target_max = np.float32(self.kx_display_target_max())
         if bool(getattr(self, "kx_normalize_per_frame", False)):
             denom = np.max(mag, axis=(1, 2), keepdims=True)
-            mag = mag / np.maximum(denom, np.float32(1e-12))
-        return mag
+            mag = mag / np.maximum(denom, np.float32(1e-12)) * target_max
+        return mag.astype(np.float32, copy=False)
 
     def scale_kx_display_gpu(self, kx_data):
         scale = str(getattr(self, "kx_display_scale", "linear")).lower()
@@ -467,14 +473,16 @@ class GPUThread(QThread):
             if getattr(self, "kx_print_info", False) and not getattr(self, "kx_info_printed", False):
                 print(f"Unknown ContinuousKX display scale '{scale}', using linear.")
             scale = "linear"
+        target_max = cupy.float32(self.kx_display_target_max())
         if bool(getattr(self, "kx_normalize_per_frame", False)):
             denom = cupy.max(mag, axis=(1, 2), keepdims=True)
-            mag = mag / cupy.maximum(denom, cupy.float32(1e-12))
+            mag = mag / cupy.maximum(denom, cupy.float32(1e-12)) * target_max
         if getattr(self, "kx_print_info", False) and not getattr(self, "kx_info_printed", False):
             self.kx_info_printed = True
             print(
                 f"ContinuousKX display: scale={scale}, "
-                f"normalize_per_frame={bool(getattr(self, 'kx_normalize_per_frame', False))}."
+                f"normalize_per_frame={bool(getattr(self, 'kx_normalize_per_frame', False))}, "
+                f"target_max={float(self.kx_display_target_max()):.1f}."
             )
         return mag
 
@@ -836,7 +844,7 @@ class GPUThread(QThread):
             self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], pixel_range)
         if self.current_dynamic_enabled():
             self.apply_post_fft_dynamic_normalization_cpu(self.data_CPU)
-        else:
+        elif not self.current_kx_display_enabled():
             self.data_CPU *= np.float32(self.AMPLIFICATION)
         if not self.current_kx_display_enabled():
             self.apply_background_x_normalization_cpu(self.data_CPU)
@@ -1486,7 +1494,7 @@ class GPUThread(QThread):
         step_start = self.gpu_timing_start(stream)
         if self.current_dynamic_enabled():
             self.apply_post_fft_dynamic_normalization_gpu(data_gpu)
-        else:
+        elif not self.current_kx_display_enabled():
             data_gpu *= cupy.float32(self.AMPLIFICATION)
         self.gpu_timing_end(timing, "post_fft_scaling", step_start, stream)
 
