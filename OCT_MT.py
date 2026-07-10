@@ -54,7 +54,8 @@ LIVE_ONLY_MODES = (
 # Shared raw-data ring buffer. More than two slots allows acquisition and processing to overlap safely.
 global memoryCount
 memoryCount = 16
-
+
+
 # Number of processed Cscan Y-lines per streaming package.
 CSCAN_PACKAGE_Y_LINES = 64
 global Memory
