@@ -8,6 +8,7 @@ class AcqTypes:
     CONTINUOUS_ALINE = "ContinuousAline"
     FINITE_ALINE = "FiniteAline"
     CONTINUOUS_BLINE = "ContinuousBline"
+    CONTINUOUS_KX = "ContinuousKX"
     FINITE_BLINE = "FiniteBline"
     CONTINUOUS_CSCAN = "ContinuousCscan"
     FINITE_CSCAN = "FiniteCscan"

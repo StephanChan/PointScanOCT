@@ -106,6 +106,7 @@ class MainWindow(QMainWindow):
         self.ui.ACQMode.addItems([
             "FiniteBline",
             "ContinuousBline",
+            "ContinuousKX",
             "FiniteCscan",
             "ContinuousCscan",
             "LocationCameraLive",
@@ -117,6 +118,7 @@ class MainWindow(QMainWindow):
         if self.ui.ACQMode.currentText() not in [
             "FiniteBline",
             "ContinuousBline",
+            "ContinuousKX",
             "FiniteCscan",
             "ContinuousCscan",
             "LocationCameraLive",

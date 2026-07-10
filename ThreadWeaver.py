@@ -29,6 +29,7 @@ from HardwareSpecs import get_objective_spec
 BLINE_MODES = (
     AcqTypes.FINITE_BLINE,
     AcqTypes.CONTINUOUS_BLINE,
+    AcqTypes.CONTINUOUS_KX,
 )
 
 ALINE_MODES = ()
@@ -39,6 +40,7 @@ CSCAN_MODES = (
 
 CONTINUOUS_MODES = (
     AcqTypes.CONTINUOUS_BLINE,
+    AcqTypes.CONTINUOUS_KX,
     AcqTypes.CONTINUOUS_CSCAN,
 )
 
@@ -70,6 +72,7 @@ class WeaverThread(QThread):
             try:
                 if self.item.action in (
                     AcqTypes.CONTINUOUS_BLINE,
+                    AcqTypes.CONTINUOUS_KX,
                     AcqTypes.CONTINUOUS_CSCAN,
                 ):
                     if not self.wait_for_processing_barrier(label=f"starting {self.item.action}"):
@@ -416,6 +419,7 @@ class WeaverThread(QThread):
              if configured_acq_mode in (
                  AcqTypes.FINITE_BLINE,
                  AcqTypes.CONTINUOUS_BLINE,
+                 AcqTypes.CONTINUOUS_KX,
              ):
                  self.Memory[ii]=np.zeros([configured_bline_avg, alines_per_bline, samples], dtype = data_type)
                  self.NAcq = 1
@@ -492,6 +496,8 @@ class WeaverThread(QThread):
                     package_frame_count = getattr(an_action, "package_frame_count", None)
                     package_total_frames = getattr(an_action, "package_total_frames", None)
                     is_final = getattr(an_action, "is_final", True)
+                    package_profile = dict(getattr(an_action, "profile", {}) or {})
+                    package_profile["weaver_received_s"] = time.perf_counter()
                     filename_bundle = self.build_filename_bundle(
                         DnS_action,
                         acq_mode,
@@ -527,7 +533,9 @@ class WeaverThread(QThread):
                                 package_frame_count=package_frame_count,
                                 package_total_frames=package_total_frames,
                                 is_final=is_final,
+                                profile=package_profile,
                             )
+                            an_action.profile["dns_queue_put_s"] = time.perf_counter()
                             self.DnSQueue.put(an_action)
                             message = f"{DnS_action} completed."
                     else:
@@ -545,7 +553,9 @@ class WeaverThread(QThread):
                             package_frame_count=package_frame_count,
                             package_total_frames=package_total_frames,
                             is_final=is_final,
+                            profile=package_profile,
                         )
+                        an_action.profile["gpu_queue_put_s"] = time.perf_counter()
                         self.GPUQueue.put(an_action)
                         message = f"{DnS_action} completed."
                     break

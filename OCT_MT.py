@@ -40,6 +40,7 @@ from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN, get_objective_s
 
 CONTINUOUS_ACQ_MODES = (
     AcqTypes.CONTINUOUS_BLINE,
+    AcqTypes.CONTINUOUS_KX,
     AcqTypes.CONTINUOUS_CSCAN,
 )
 
@@ -662,7 +663,8 @@ class GUI(MainWindow):
         
     def Update_contrast(self):
         acq_mode = self.ui.ACQMode.currentText()
-        if acq_mode in ["FiniteBline", "ContinuousBline"]:
+
+        if acq_mode in ["FiniteBline", "ContinuousBline", "ContinuousKX"]:
             payload = self._last_display_payloads.get("bline")
             if payload is not None:
                 render_bline_ready(self.ui, payload)

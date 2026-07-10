@@ -12,8 +12,9 @@ from ActionFields import DnSActionField
 import os
 import time
 import traceback
-from ActionTypes import DnSActions, EXIT_ACTION, GPUActions
+from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION, GPUActions
 from CameraUi import effective_camera_sample_count
+from HardwareSpecs import get_camera_spec
 from scipy.ndimage import zoom, uniform_filter
 
 # =============================================================================
@@ -44,10 +45,51 @@ GPU_OVERLAP_TRANSFER = True
 # are clamped because of the current CUDA kernel halo loading pattern.
 GPU_SPECTRAL_BASELINE_WINDOW_SIZE = 35
 
+# Off-axis holography X-sideband filtering -----------------------------------
+# Set True to enable: FFT along X, keep one spatial sideband, IFFT back, then
+# remove the reference carrier before the axial FFT. Leave False for normal OCT.
+HOLO_X_FILTER_ENABLED = False
+
+# Physical reference tilt model. The sideband center is calculated as
+# kx = 2*pi*sin(theta)/lambda0 unless HOLO_X_FILTER_CENTER_FRACTION_OVERRIDE
+# is set below.
+HOLO_REFERENCE_TILT_DEG = 1.3
+HOLO_CENTER_WAVELENGTH_NM = 840.0
+HOLO_WAVELENGTH_RANGE_NM = 40.0
+
+# +1 keeps the positive-kx sideband; -1 keeps the negative-kx sideband.
+HOLO_SIDEBAND_SIGN = +1
+
+# Sideband window width/taper as fractions of the sideband center magnitude.
+HOLO_SIDEBAND_HALF_WIDTH_FRACTION = 0.65
+HOLO_SIDEBAND_TAPER_FRACTION = 0.30
+
+# Optional direct tuning: set to a signed fraction of kx Nyquist, e.g. +0.35.
+# None means use HOLO_REFERENCE_TILT_DEG and camera pixel size.
+HOLO_X_FILTER_CENTER_FRACTION_OVERRIDE = None
+
+# Demodulate exp(-i*k*x*sin(theta)) after IFFT. For measured/manual carrier
+# tuning, leave this enabled only when HOLO_REFERENCE_TILT_DEG is correct.
+HOLO_REFERENCE_CARRIER_DEMODULATION = True
+
+# With the sign convention used here, the positive sideband is often R*conj(E),
+# so conjugating it restores the sample axial phase sign.
+HOLO_CONJUGATE_POSITIVE_SIDEBAND = True
+
+# Set True to keep all high frequencies beyond the low edge instead of using a
+# finite band around the sideband center. Usually False is cleaner.
+HOLO_KEEP_HIGH_FREQUENCY_TAIL = False
+
+# Set True to subtract the median spectrum over X after demodulation.
+HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD = False
+
+# Set True to print the chosen carrier/window once when the first chunk runs.
+HOLO_PRINT_FILTER_INFO = True
+
 # Set True to print GPU processing timing for each FFT request. Timing forces
 # CUDA synchronization around each profiled step, so use it for diagnostics and
 # set it back to False for maximum acquisition throughput.
-GPU_PROFILE_TIMING_ENABLED = False
+GPU_PROFILE_TIMING_ENABLED = True
 
 # Set True to print one timing line per processed GPU chunk. False prints only
 # one compact summary per FFT request.
@@ -123,6 +165,20 @@ class GPUThread(QThread):
         self.gpu_chunk_frames = GPU_FFT_CHUNK_FRAMES
         self.gpu_overlap_transfer = GPU_OVERLAP_TRANSFER
         self.gpu_spectral_baseline_window_size = GPU_SPECTRAL_BASELINE_WINDOW_SIZE
+        self.holo_x_filter_enabled = HOLO_X_FILTER_ENABLED
+        self.holo_reference_tilt_deg = HOLO_REFERENCE_TILT_DEG
+        self.holo_center_wavelength_nm = HOLO_CENTER_WAVELENGTH_NM
+        self.holo_wavelength_range_nm = HOLO_WAVELENGTH_RANGE_NM
+        self.holo_sideband_sign = HOLO_SIDEBAND_SIGN
+        self.holo_sideband_half_width_fraction = HOLO_SIDEBAND_HALF_WIDTH_FRACTION
+        self.holo_sideband_taper_fraction = HOLO_SIDEBAND_TAPER_FRACTION
+        self.holo_x_filter_center_fraction_override = HOLO_X_FILTER_CENTER_FRACTION_OVERRIDE
+        self.holo_reference_carrier_demodulation = HOLO_REFERENCE_CARRIER_DEMODULATION
+        self.holo_conjugate_positive_sideband = HOLO_CONJUGATE_POSITIVE_SIDEBAND
+        self.holo_keep_high_frequency_tail = HOLO_KEEP_HIGH_FREQUENCY_TAIL
+        self.holo_subtract_common_mode_after_demod = HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD
+        self.holo_print_filter_info = HOLO_PRINT_FILTER_INFO
+        self.holo_filter_info_printed = False
         self.gpu_profile_timing_enabled = GPU_PROFILE_TIMING_ENABLED
         self.gpu_profile_timing_print_chunks = GPU_PROFILE_TIMING_PRINT_CHUNKS
         self.background_x_normalization_eps = NORMALIZATION_EPS
@@ -348,7 +404,12 @@ class GPUThread(QThread):
         return max(1, int(self.ui.Ypixels.value()))
 
     def current_fft_result_mode(self):
+        if getattr(self.item, "acq_mode", None) == AcqTypes.CONTINUOUS_KX:
+            return "KX"
         return "AMP"
+
+    def current_kx_display_enabled(self):
+        return getattr(self.item, "acq_mode", None) == AcqTypes.CONTINUOUS_KX
 
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
         depth_data = fft_data[:, pixel_start:pixel_start + pixel_range]
@@ -458,6 +519,7 @@ class GPUThread(QThread):
             "spectral_highpass",
             "reshape_alines",
             "interpolation",
+            "off_axis_x_filter",
             "fft",
             "select_depth_result",
             "reshape_depth",
@@ -490,7 +552,7 @@ class GPUThread(QThread):
     def print_gpu_timing_summary(self, timing, mode, frames, chunks):
         if not self.gpu_profile_timing_enabled:
             return
-        total = sum(value for label, value in timing.items() if not label.startswith("_"))
+        total = sum(value for label, value in timing.items() if not label.startswith("_") and isinstance(value, (int, float)))
         wall_seconds = timing.get("_wall_seconds")
         message = (
             f"GPU timing [{mode}, frames={frames}, chunks={chunks}]: "
@@ -518,6 +580,10 @@ class GPUThread(QThread):
 
     def cudaFFT(self, DnS_action, acq_mode, memory_slot, context):
         timing = {"_wall_start": time.perf_counter()}
+        package_profile = dict(getattr(self.item, "profile", {}) or {})
+        package_profile["gpu_start_s"] = timing["_wall_start"]
+        if package_profile.get("gpu_queue_put_s") is not None:
+            package_profile["gpu_queue_wait_s"] = timing["_wall_start"] - package_profile["gpu_queue_put_s"]
         request_start = self.gpu_timing_start()
         # get samples per Aline
         samples = self.current_nsamples()
@@ -582,6 +648,11 @@ class GPUThread(QThread):
                 frame_offset=0,
                 y_slice_index=y_slice_index,
             )
+        timing["_wall_seconds"] = time.perf_counter() - timing["_wall_start"]
+        package_profile["gpu_wall_s"] = timing["_wall_seconds"]
+        for key, value in timing.items():
+            if not key.startswith("_") and isinstance(value, (int, float)):
+                package_profile[f"gpu_{key}_s"] = float(value)
         # display and save data, data type is float32
         an_action = DnSActionField(
             DnS_action,
@@ -598,14 +669,15 @@ class GPUThread(QThread):
             package_frame_count=getattr(self.item, "package_frame_count", None),
             package_total_frames=getattr(self.item, "package_total_frames", None),
             is_final=getattr(self.item, "is_final", True),
+            profile=package_profile,
         )
+        an_action.profile["dns_queue_put_s"] = time.perf_counter()
         self.DnSQueue.put(an_action)
 
         # print('send for display')
         if getattr(self, "return_processed_to_weaver", False):
             self.GPU2weaverQueue.put(self.data_CPU)
             # print('GPU data to weaver')
-        timing["_wall_seconds"] = time.perf_counter() - timing["_wall_start"]
         self.print_gpu_timing_summary(
             timing,
             self.current_fft_result_mode(),
@@ -614,6 +686,8 @@ class GPUThread(QThread):
         )
 
     def fft_cpu(self, DnS_action, acq_mode, memory_slot, context):
+        cpu_start_s = time.perf_counter()
+        package_profile = dict(getattr(self.item, "profile", {}) or {})
         samples = self.current_nsamples()
         pixel_start = self.current_depth_start()
         pixel_range = self.current_depth_range()
@@ -702,7 +776,11 @@ class GPUThread(QThread):
             package_frame_count=getattr(self.item, "package_frame_count", None),
             package_total_frames=getattr(self.item, "package_total_frames", None),
             is_final=getattr(self.item, "is_final", True),
+            profile=package_profile,
         )
+        package_profile["cpu_wall_s"] = time.perf_counter() - cpu_start_s
+        an_action.profile["cpu_wall_s"] = package_profile["cpu_wall_s"]
+        an_action.profile["dns_queue_put_s"] = time.perf_counter()
         self.DnSQueue.put(an_action)
 
         if getattr(self, "return_processed_to_weaver", False):
@@ -1081,6 +1159,119 @@ class GPUThread(QThread):
             'frame_offset': frame_offset,
         }
 
+
+    def current_holo_x_filter_enabled(self):
+        return bool(self.holo_x_filter_enabled)
+
+    def current_camera_pixel_size_m(self):
+        camera = get_camera_spec(self.ui.Camera.currentText())
+        if camera is None:
+            return 9.0e-6
+        return float(camera.pixel_size_um) * 1e-6
+
+    def holo_center_wavelength_m(self):
+        return float(self.holo_center_wavelength_nm) * 1e-9
+
+    def holo_wavelength_range_m(self):
+        return float(self.holo_wavelength_range_nm) * 1e-9
+
+    def holo_reference_tilt_rad(self):
+        return float(self.holo_reference_tilt_deg) * np.pi / 180.0
+
+    def holo_wavenumber_axis_gpu(self, samples):
+        center = self.holo_center_wavelength_m()
+        span = self.holo_wavelength_range_m()
+        lambda_start = center - span / 2.0
+        lambda_end = center + span / 2.0
+        k_start = 2.0 * np.pi / lambda_end
+        k_end = 2.0 * np.pi / lambda_start
+        return cupy.linspace(k_start, k_end, int(samples), dtype=cupy.float32)
+
+    def holo_filter_weights_gpu(self, x_pixels):
+        x_pixels = int(x_pixels)
+        pixel_size_m = self.current_camera_pixel_size_m()
+        kx_axis = cupy.fft.fftshift(cupy.fft.fftfreq(x_pixels, d=pixel_size_m)).astype(cupy.float32)
+        kx_axis *= cupy.float32(2.0 * np.pi)
+        kx_nyquist = np.pi / pixel_size_m
+        sign = 1.0 if int(self.holo_sideband_sign) >= 0 else -1.0
+
+        override = self.holo_x_filter_center_fraction_override
+        if override is None:
+            center_abs = 2.0 * np.pi * abs(np.sin(self.holo_reference_tilt_rad())) / self.holo_center_wavelength_m()
+            center = sign * center_abs
+        else:
+            center = float(override) * kx_nyquist
+            center_abs = abs(center)
+
+        half_width = max(center_abs * float(self.holo_sideband_half_width_fraction), kx_nyquist / max(x_pixels, 1))
+        taper = np.clip(float(self.holo_sideband_taper_fraction), 0.0, 0.95) * half_width
+        weights = cupy.zeros((x_pixels,), dtype=cupy.float32)
+
+        if self.holo_keep_high_frequency_tail:
+            signed_kx = cupy.float32(sign) * kx_axis
+            lower_edge = center_abs - half_width
+            if taper > 0:
+                flat = signed_kx >= lower_edge + taper
+                roll = (signed_kx > lower_edge) & (signed_kx < lower_edge + taper)
+                weights[flat] = cupy.float32(1.0)
+                weights[roll] = cupy.float32(0.5) * (
+                    cupy.float32(1.0) - cupy.cos(cupy.float32(np.pi) * (signed_kx[roll] - lower_edge) / taper)
+                )
+            else:
+                weights[signed_kx > lower_edge] = cupy.float32(1.0)
+        else:
+            dist = cupy.abs(kx_axis - cupy.float32(center))
+            if taper > 0:
+                flat = dist <= (half_width - taper)
+                roll = (dist > (half_width - taper)) & (dist < half_width)
+                weights[flat] = cupy.float32(1.0)
+                weights[roll] = cupy.float32(0.5) * (
+                    cupy.float32(1.0) + cupy.cos(cupy.float32(np.pi) * (dist[roll] - (half_width - taper)) / taper)
+                )
+            else:
+                weights[dist < half_width] = cupy.float32(1.0)
+
+        if self.holo_print_filter_info and not self.holo_filter_info_printed:
+            self.holo_filter_info_printed = True
+            print(
+                "Off-axis X filter: "
+                f"enabled={self.holo_x_filter_enabled}, sign={int(sign)}, "
+                f"center/Nyquist={center / kx_nyquist:.3f}, "
+                f"half_width/Nyquist={half_width / kx_nyquist:.3f}, "
+                f"taper_fraction={float(self.holo_sideband_taper_fraction):.2f}, "
+                f"pixel={pixel_size_m * 1e6:.2f} um"
+            )
+        return weights
+
+    def apply_holo_x_filter_gpu(self, spectral_gpu, frames, x_pixels, samples):
+        field_gpu = spectral_gpu.reshape(int(frames), int(x_pixels), int(samples)).astype(cupy.complex64, copy=False)
+        filtered_kx_gpu = cupy.fft.fftshift(cupy.fft.fft(field_gpu, axis=1), axes=1)
+        weights_gpu = self.holo_filter_weights_gpu(x_pixels)
+        filtered_kx_gpu *= weights_gpu[cupy.newaxis, :, cupy.newaxis]
+        field_gpu = cupy.fft.ifft(cupy.fft.ifftshift(filtered_kx_gpu, axes=1), axis=1)
+
+        if self.holo_reference_carrier_demodulation:
+            pixel_size_m = self.current_camera_pixel_size_m()
+            x_axis = (cupy.arange(int(x_pixels), dtype=cupy.float32) - cupy.float32((int(x_pixels) - 1) / 2.0))
+            x_axis *= cupy.float32(pixel_size_m)
+            k_axis = self.holo_wavenumber_axis_gpu(samples)
+            sign = 1.0 if int(self.holo_sideband_sign) >= 0 else -1.0
+            sin_tilt = np.sin(self.holo_reference_tilt_rad())
+            carrier = cupy.exp(
+                -1j
+                * cupy.float32(sign * sin_tilt)
+                * k_axis[cupy.newaxis, cupy.newaxis, :]
+                * x_axis[cupy.newaxis, :, cupy.newaxis]
+            )
+            field_gpu *= carrier.astype(cupy.complex64, copy=False)
+            if int(self.holo_sideband_sign) > 0 and self.holo_conjugate_positive_sideband:
+                field_gpu = cupy.conj(field_gpu)
+
+        if self.holo_subtract_common_mode_after_demod:
+            field_gpu = field_gpu - cupy.median(field_gpu, axis=1, keepdims=True)
+
+        return field_gpu.reshape(int(frames) * int(x_pixels), int(samples))
+
     def process_chunk_gpu(
         self,
         raw_chunk,
@@ -1162,16 +1353,34 @@ class GPUThread(QThread):
         self.gpu_timing_end(timing, "interpolation", step_start, stream)
         keep_alive.append(yp_gpu)
 
-        step_start = self.gpu_timing_start(stream)
-        if self.interp:
-            data_gpu = cupy.fft.fft(yp_gpu * self.dispersion_gpu, axis=1) / samples
-        else:
-            data_gpu = cupy.fft.fft(yp_gpu, axis=1) / samples
-        self.gpu_timing_end(timing, "fft", step_start, stream)
+        if self.current_holo_x_filter_enabled() and not self.current_kx_display_enabled():
+            step_start = self.gpu_timing_start(stream)
+            yp_gpu = self.apply_holo_x_filter_gpu(yp_gpu, output_frames, chunk_shape[1], samples)
+            self.gpu_timing_end(timing, "off_axis_x_filter", step_start, stream)
+            keep_alive.append(yp_gpu)
 
-        step_start = self.gpu_timing_start(stream)
-        data_gpu = self.select_fft_depth_result(data_gpu, Pixel_start, Pixel_range, cupy)
-        self.gpu_timing_end(timing, "select_depth_result", step_start, stream)
+        if self.current_kx_display_enabled():
+            step_start = self.gpu_timing_start(stream)
+            kx_gpu = cupy.fft.fftshift(
+                cupy.fft.fft(
+                    yp_gpu.reshape(output_frames, chunk_shape[1], samples),
+                    axis=1,
+                ),
+                axes=1,
+            )
+            data_gpu = cupy.log1p(cupy.absolute(kx_gpu)).astype(cupy.float32, copy=False)
+            self.gpu_timing_end(timing, "fft", step_start, stream)
+        else:
+            step_start = self.gpu_timing_start(stream)
+            if self.interp:
+                data_gpu = cupy.fft.fft(yp_gpu * self.dispersion_gpu, axis=1) / samples
+            else:
+                data_gpu = cupy.fft.fft(yp_gpu, axis=1) / samples
+            self.gpu_timing_end(timing, "fft", step_start, stream)
+
+            step_start = self.gpu_timing_start(stream)
+            data_gpu = self.select_fft_depth_result(data_gpu, Pixel_start, Pixel_range, cupy)
+            self.gpu_timing_end(timing, "select_depth_result", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
         data_gpu = data_gpu.reshape(output_frames, chunk_shape[1], Pixel_range)

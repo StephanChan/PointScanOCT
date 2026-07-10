@@ -215,7 +215,7 @@ class Camera(QThread):
         self.CameraOffsetX, self.CameraOffsetY = self.camera_roi_offsets()
         if self.ui.ACQMode.currentText() in ['FiniteBline']:
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
-        elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousCscan']:
+        elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousKX', 'ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
         elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
@@ -235,7 +235,7 @@ class Camera(QThread):
                 pfResult = self.pfCam.SetFeatureInt("AcquisitionFrameCount", self.BlinesPerAcq)
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisition Frame Count", pfResult)
-            elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousCscan']:
+            elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousKX', 'ContinuousCscan']:
                 pfResult = self.pfCam.SetFeatureEnum("AcquisitionMode", "Continuous")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
@@ -518,6 +518,7 @@ class Camera(QThread):
         completed_block_ids = set()
         next_block_to_emit = [0]
         block_slots = {}
+        block_start_times = {}
         block_slot_condition = threading.Condition()
         total_t0 = time.perf_counter()
 
@@ -540,6 +541,13 @@ class Camera(QThread):
             package_start = block_id * NBlines
             package_count = expected_block_frames(block_id)
             total_frames = None if self.BlinesPerAcq == CONTINUOUS else int(self.BlinesPerAcq)
+            ready_s = time.perf_counter()
+            start_s = block_start_times.pop(block_id, None)
+            package_profile = {
+                "camera_package_start_s": start_s,
+                "camera_package_ready_s": ready_s,
+                "camera_package_fill_s": (ready_s - start_s) if start_s is not None else None,
+            }
             return DbackActionField(
                 memory_slot,
                 package_start=package_start,
@@ -549,6 +557,7 @@ class Camera(QThread):
                     self.BlinesPerAcq != CONTINUOUS
                     and package_start + package_count >= int(self.BlinesPerAcq)
                 ),
+                profile=package_profile,
             )
 
         def memory_slot_for_block(block_id):
@@ -675,6 +684,9 @@ class Camera(QThread):
                     increment_profile("timeouts")
                     continue
 
+                block_id = blines_count // NBlines
+                with completion_lock:
+                    block_start_times.setdefault(block_id, time.perf_counter())
                 t_put = time.perf_counter()
                 grab_q.put((pfBuffer, blines_count))
                 add_profile("queue_put", time.perf_counter() - t_put)
@@ -780,6 +792,11 @@ class Camera(QThread):
                     package_frame_count=NBlines,
                     package_total_frames=self.BlinesPerAcq,
                     is_final=BlinesCount >= self.BlinesPerAcq,
+                    profile={
+                        "camera_package_start_s": package_start_time,
+                        "camera_package_ready_s": time.perf_counter(),
+                        "camera_package_fill_s": time.perf_counter() - package_start_time,
+                    },
                 )
                 self.DatabackQueue.put(an_action)
                 if hasattr(self, "MemoryFreeQueue"):
@@ -787,6 +804,7 @@ class Camera(QThread):
                 else:
                     self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
                     current_slot = self.MemoryLoc
+                package_start_time = time.perf_counter()
                 # print('MemoryLoc:', self.MemoryLoc)
                 
 
@@ -804,6 +822,11 @@ class Camera(QThread):
                 package_frame_count=partial_count,
                 package_total_frames=self.BlinesPerAcq,
                 is_final=True,
+                profile={
+                    "camera_package_start_s": package_start_time,
+                    "camera_package_ready_s": time.perf_counter(),
+                    "camera_package_fill_s": time.perf_counter() - package_start_time,
+                },
             )
             self.DatabackQueue.put(an_action)
 

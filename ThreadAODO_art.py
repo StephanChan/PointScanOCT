@@ -329,7 +329,7 @@ class AODOThread(QThread):
                                                   min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
                                                   units=ni.constants.VoltageUnits.VOLTS)
             # depending on whether continuous or finite, config clock and mode
-            if self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousCscan']:
+            if self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousKX', 'ContinuousCscan']:
                 mode =  Atype.CONTINUOUS
             else:
                 mode =  Atype.FINITE
