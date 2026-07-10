@@ -40,6 +40,7 @@ from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN, get_objective_s
 
 CONTINUOUS_ACQ_MODES = (
     AcqTypes.CONTINUOUS_BLINE,
+    AcqTypes.CONTINUOUS_KX,
     AcqTypes.CONTINUOUS_CSCAN,
 )
 
@@ -54,7 +55,8 @@ LIVE_ONLY_MODES = (
 # Shared raw-data ring buffer. More than two slots allows acquisition and processing to overlap safely.
 global memoryCount
 memoryCount = 16
-
+
+
 # Number of processed Cscan Y-lines per streaming package.
 CSCAN_PACKAGE_Y_LINES = 64
 global Memory
@@ -661,7 +663,7 @@ class GUI(MainWindow):
         
     def Update_contrast(self):
         acq_mode = self.ui.ACQMode.currentText()
-        if acq_mode in ["FiniteBline", "ContinuousBline"]:
+        if acq_mode in ["FiniteBline", "ContinuousBline", "ContinuousKX"]:
             payload = self._last_display_payloads.get("bline")
             if payload is not None:
                 render_bline_ready(self.ui, payload)

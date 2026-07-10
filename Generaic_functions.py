@@ -166,7 +166,7 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
 
     # DO clock is synchronuous with Galvo waveform
     # DO configure: port0 line 0
-    if mode in ['ContinuousAline', 'FiniteAline', 'ContinuousBline', 'FiniteBline']:
+    if mode in ['ContinuousAline', 'FiniteAline', 'ContinuousBline', 'ContinuousKX', 'FiniteBline']:
 
         AOwaveform = np.ones(BVG*2) * Galvo_bias
         DOwaveform = np.ones([BVG, 2],dtype = np.uint32)

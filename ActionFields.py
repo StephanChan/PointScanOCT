@@ -34,8 +34,8 @@ class DnSActionField:
         skip_save=False,
         package_start=0,
         package_frame_count=None,
-        package_total_frames=None,
-        is_final=True,
+        package_total_frames=None,        is_final=True,
+        profile=None,
     ):
         super().__init__()
         self.action = action
@@ -52,6 +52,7 @@ class DnSActionField:
         self.package_frame_count = package_frame_count
         self.package_total_frames = package_total_frames
         self.is_final = bool(is_final)
+        self.profile = {} if profile is None else dict(profile)
 
 
 class GPUActionField:
@@ -67,8 +68,8 @@ class GPUActionField:
         skip_save=False,
         package_start=0,
         package_frame_count=None,
-        package_total_frames=None,
-        is_final=True,
+        package_total_frames=None,        is_final=True,
+        profile=None,
     ):
         super().__init__()
         self.action = action
@@ -83,6 +84,7 @@ class GPUActionField:
         self.package_frame_count = package_frame_count
         self.package_total_frames = package_total_frames
         self.is_final = bool(is_final)
+        self.profile = {} if profile is None else dict(profile)
 
 
 class DActionField:
@@ -98,8 +100,8 @@ class DbackActionField:
         error=None,
         package_start=0,
         package_frame_count=None,
-        package_total_frames=None,
-        is_final=True,
+        package_total_frames=None,        is_final=True,
+        profile=None,
     ):
         super().__init__()
         self.memory_slot = memory_slot
@@ -108,6 +110,7 @@ class DbackActionField:
         self.package_frame_count = package_frame_count
         self.package_total_frames = package_total_frames
         self.is_final = bool(is_final)
+        self.profile = {} if profile is None else dict(profile)
 
 
 class EXITField:

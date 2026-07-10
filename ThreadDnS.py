@@ -29,6 +29,7 @@ ALINE_MODES = ()
 BLINE_MODES = (
     AcqTypes.FINITE_BLINE,
     AcqTypes.CONTINUOUS_BLINE,
+    AcqTypes.CONTINUOUS_KX,
 )
 
 CSCAN_MODES = (
@@ -96,6 +97,10 @@ class DnSThread(QThread):
         while self.item.action != EXIT_ACTION:
             self.active_tasks += 1
             start=time.time()
+            profile = dict(getattr(self.item, "profile", {}) or {})
+            profile["dns_start_s"] = time.perf_counter()
+            if profile.get("dns_queue_put_s") is not None:
+                profile["dns_queue_wait_s"] = profile["dns_start_s"] - profile["dns_queue_put_s"]
             self.current_acq_mode = self.item.acq_mode
             try:
                 if self.item.action in (
@@ -108,10 +113,15 @@ class DnSThread(QThread):
                 elif self.item.action in (
                     AcqTypes.FINITE_BLINE,
                     AcqTypes.CONTINUOUS_BLINE,
+                    AcqTypes.CONTINUOUS_KX,
                 ):
                     self.Process_bline(self.item.data, self.item.raw, self.item.dynamic, self.current_acq_mode, self.item.gpu_avg_count)
                     self.display_actions += 1
+                    emit_start = time.perf_counter()
                     self._emit_display(kind="bline")
+                    profile["dns_emit_display_s"] = time.perf_counter() - emit_start
+                    profile["dns_process_display_s"] = time.perf_counter() - profile["dns_start_s"]
+                    self.print_package_profile("bline", profile)
                 elif self.item.action in (
                     AcqTypes.FINITE_CSCAN,
                     AcqTypes.CONTINUOUS_CSCAN,
@@ -128,7 +138,11 @@ class DnSThread(QThread):
                         self.Process_Cscan_Dynamic(self.item.data, self.item.dynamic, self.current_acq_mode, self.item.gpu_avg_count)
                     else:
                         self.Process_Cscan(self.item.data, self.item.raw, self.current_acq_mode, self.item.gpu_avg_count)
+                    emit_start = time.perf_counter()
                     self._emit_display(kind="cscan")
+                    profile["dns_emit_display_s"] = time.perf_counter() - emit_start
+                    profile["dns_process_display_s"] = time.perf_counter() - profile["dns_start_s"]
+                    self.print_package_profile("cscan", profile)
                     
                 elif self.item.action == DnSActions.CLEAR:
                     self.reset_dynamic_accumulators()
@@ -158,6 +172,28 @@ class DnSThread(QThread):
             
         self.emit_status("Display/save thread exited.")
 
+
+    def print_package_profile(self, kind, profile):
+        if not profile:
+            return
+        labels = [
+            ("camera", "camera_package_fill_s"),
+            ("gpu_queue", "gpu_queue_wait_s"),
+            ("gpu", "gpu_wall_s"),
+            ("H2D", "gpu_load_raw_to_gpu_s"),
+            ("FFT", "gpu_fft_s"),
+            ("D2H", "gpu_copy_gpu_to_host_s"),
+            ("DnS", "dns_process_display_s"),
+        ]
+        parts = []
+        for label, key in labels:
+            value = profile.get(key)
+            if isinstance(value, (int, float)):
+                parts.append(f"{label}={value * 1000.0:.2f} ms")
+        if parts:
+            message = f"Package timing [{kind}]: " + ", ".join(parts)
+            print(message)
+            self.emit_status(message)
     def is_idle(self):
         return self.queue.qsize() == 0 and self.active_tasks == 0
 
