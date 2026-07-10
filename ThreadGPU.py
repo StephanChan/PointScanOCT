@@ -86,6 +86,24 @@ HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD = False
 # Set True to print the chosen carrier/window once when the first chunk runs.
 HOLO_PRINT_FILTER_INFO = True
 
+# After off-axis filtering removes the conjugate ambiguity, center zero depth in
+# the displayed axial FFT. Normal OCT keeps the traditional unshifted crop.
+HOLO_DEPTH_FFTSHIFT_DISPLAY = True
+HOLO_CENTER_ZERO_DEPTH_IN_DISPLAY = True
+
+# ContinuousKX display --------------------------------------------------------
+# Controls the displayed magnitude after FFT along X. Use "linear" to make
+# carrier/DC peaks less compressed; use "log" if bright peaks saturate the view.
+# Valid values: "linear", "log", "sqrt".
+CONTINUOUS_KX_DISPLAY_SCALE = "linear"
+
+# Set True to normalize each ContinuousKX frame by its own maximum before the
+# GUI contrast scaling. Usually False is better when comparing tilt strength.
+CONTINUOUS_KX_NORMALIZE_PER_FRAME = False
+
+# Set True to print the ContinuousKX scaling choice once at startup.
+CONTINUOUS_KX_PRINT_INFO = True
+
 # Set True to print GPU processing timing for each FFT request. Timing forces
 # CUDA synchronization around each profiled step, so use it for diagnostics and
 # set it back to False for maximum acquisition throughput.
@@ -178,7 +196,13 @@ class GPUThread(QThread):
         self.holo_keep_high_frequency_tail = HOLO_KEEP_HIGH_FREQUENCY_TAIL
         self.holo_subtract_common_mode_after_demod = HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD
         self.holo_print_filter_info = HOLO_PRINT_FILTER_INFO
+        self.holo_depth_fftshift_display = HOLO_DEPTH_FFTSHIFT_DISPLAY
+        self.holo_center_zero_depth_in_display = HOLO_CENTER_ZERO_DEPTH_IN_DISPLAY
         self.holo_filter_info_printed = False
+        self.kx_display_scale = CONTINUOUS_KX_DISPLAY_SCALE
+        self.kx_normalize_per_frame = CONTINUOUS_KX_NORMALIZE_PER_FRAME
+        self.kx_print_info = CONTINUOUS_KX_PRINT_INFO
+        self.kx_info_printed = False
         self.gpu_profile_timing_enabled = GPU_PROFILE_TIMING_ENABLED
         self.gpu_profile_timing_print_chunks = GPU_PROFILE_TIMING_PRINT_CHUNKS
         self.background_x_normalization_eps = NORMALIZATION_EPS
@@ -416,7 +440,66 @@ class GPUThread(QThread):
             return int(samples)
         return int(pixel_range)
 
+    def scale_kx_display_cpu(self, kx_data):
+        scale = str(getattr(self, "kx_display_scale", "linear")).lower()
+        mag = np.absolute(kx_data).astype(np.float32, copy=False)
+        if scale == "log":
+            mag = np.log1p(mag).astype(np.float32, copy=False)
+        elif scale == "sqrt":
+            mag = np.sqrt(mag).astype(np.float32, copy=False)
+        elif scale != "linear":
+            if getattr(self, "kx_print_info", False) and not getattr(self, "kx_info_printed", False):
+                print(f"Unknown ContinuousKX display scale '{scale}', using linear.")
+            scale = "linear"
+        if bool(getattr(self, "kx_normalize_per_frame", False)):
+            denom = np.max(mag, axis=(1, 2), keepdims=True)
+            mag = mag / np.maximum(denom, np.float32(1e-12))
+        return mag
+
+    def scale_kx_display_gpu(self, kx_data):
+        scale = str(getattr(self, "kx_display_scale", "linear")).lower()
+        mag = cupy.absolute(kx_data).astype(cupy.float32, copy=False)
+        if scale == "log":
+            mag = cupy.log1p(mag).astype(cupy.float32, copy=False)
+        elif scale == "sqrt":
+            mag = cupy.sqrt(mag).astype(cupy.float32, copy=False)
+        elif scale != "linear":
+            if getattr(self, "kx_print_info", False) and not getattr(self, "kx_info_printed", False):
+                print(f"Unknown ContinuousKX display scale '{scale}', using linear.")
+            scale = "linear"
+        if bool(getattr(self, "kx_normalize_per_frame", False)):
+            denom = cupy.max(mag, axis=(1, 2), keepdims=True)
+            mag = mag / cupy.maximum(denom, cupy.float32(1e-12))
+        if getattr(self, "kx_print_info", False) and not getattr(self, "kx_info_printed", False):
+            self.kx_info_printed = True
+            print(
+                f"ContinuousKX display: scale={scale}, "
+                f"normalize_per_frame={bool(getattr(self, 'kx_normalize_per_frame', False))}."
+            )
+        return mag
+
+    def current_holo_depth_fftshift_enabled(self):
+        return (
+            self.current_holo_x_filter_enabled()
+            and not self.current_kx_display_enabled()
+            and bool(getattr(self, "holo_depth_fftshift_display", False))
+        )
+
+    def depth_crop_start(self, total_samples, pixel_start, pixel_range):
+        total_samples = max(1, int(total_samples))
+        pixel_range = max(1, min(int(pixel_range), total_samples))
+        if (
+            self.current_holo_depth_fftshift_enabled()
+            and bool(getattr(self, "holo_center_zero_depth_in_display", False))
+        ):
+            return max(0, min(total_samples - pixel_range, total_samples // 2 - pixel_range // 2))
+        return max(0, min(int(pixel_start), total_samples - pixel_range))
+
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
+        if self.current_holo_depth_fftshift_enabled():
+            fft_data = xp.fft.fftshift(fft_data, axes=1)
+        pixel_range = max(1, min(int(pixel_range), int(fft_data.shape[1])))
+        pixel_start = self.depth_crop_start(fft_data.shape[1], pixel_start, pixel_range)
         depth_data = fft_data[:, pixel_start:pixel_start + pixel_range]
         return xp.absolute(depth_data)
 
@@ -742,7 +825,7 @@ class GPUThread(QThread):
         if self.current_kx_display_enabled():
             self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], samples)
             self.data_CPU = np.fft.fftshift(np.fft.fft(self.data_CPU, axis=1), axes=1)
-            self.data_CPU = np.log1p(np.absolute(self.data_CPU)).astype(np.float32, copy=False)
+            self.data_CPU = self.scale_kx_display_cpu(self.data_CPU)
         else:
             if self.interp:
                 self.data_CPU = np.fft.fft(self.data_CPU * self.dispersion, axis=1) / samples
@@ -1381,7 +1464,7 @@ class GPUThread(QThread):
                 ),
                 axes=1,
             )
-            data_gpu = cupy.log1p(cupy.absolute(kx_gpu)).astype(cupy.float32, copy=False)
+            data_gpu = self.scale_kx_display_gpu(kx_gpu)
             self.gpu_timing_end(timing, "fft", step_start, stream)
         else:
             step_start = self.gpu_timing_start(stream)
