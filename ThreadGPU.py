@@ -86,10 +86,10 @@ HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD = False
 # Set True to print the chosen carrier/window once when the first chunk runs.
 HOLO_PRINT_FILTER_INFO = True
 
-# After off-axis filtering removes the conjugate ambiguity, center zero depth in
-# the displayed axial FFT. Normal OCT keeps the traditional unshifted crop.
-HOLO_DEPTH_FFTSHIFT_DISPLAY = True
-HOLO_CENTER_ZERO_DEPTH_IN_DISPLAY = True
+# Center zero depth in displayed axial FFT results. This applies to CPU/GPU FFT
+# modes; raw/no-FFT display does not pass through this helper.
+DEPTH_FFTSHIFT_DISPLAY = True
+DEPTH_CENTER_ZERO_DEPTH_IN_DISPLAY = True
 
 # ContinuousKX display --------------------------------------------------------
 # Controls the displayed magnitude after FFT along X. Use "linear" to make
@@ -196,8 +196,8 @@ class GPUThread(QThread):
         self.holo_keep_high_frequency_tail = HOLO_KEEP_HIGH_FREQUENCY_TAIL
         self.holo_subtract_common_mode_after_demod = HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD
         self.holo_print_filter_info = HOLO_PRINT_FILTER_INFO
-        self.holo_depth_fftshift_display = HOLO_DEPTH_FFTSHIFT_DISPLAY
-        self.holo_center_zero_depth_in_display = HOLO_CENTER_ZERO_DEPTH_IN_DISPLAY
+        self.depth_fftshift_display = DEPTH_FFTSHIFT_DISPLAY
+        self.depth_center_zero_depth_in_display = DEPTH_CENTER_ZERO_DEPTH_IN_DISPLAY
         self.holo_filter_info_printed = False
         self.kx_display_scale = CONTINUOUS_KX_DISPLAY_SCALE
         self.kx_normalize_per_frame = CONTINUOUS_KX_NORMALIZE_PER_FRAME
@@ -486,25 +486,24 @@ class GPUThread(QThread):
             )
         return mag
 
-    def current_holo_depth_fftshift_enabled(self):
+    def current_depth_fftshift_enabled(self):
         return (
-            self.current_holo_x_filter_enabled()
-            and not self.current_kx_display_enabled()
-            and bool(getattr(self, "holo_depth_fftshift_display", False))
+            not self.current_kx_display_enabled()
+            and bool(getattr(self, "depth_fftshift_display", False))
         )
 
     def depth_crop_start(self, total_samples, pixel_start, pixel_range):
         total_samples = max(1, int(total_samples))
         pixel_range = max(1, min(int(pixel_range), total_samples))
         if (
-            self.current_holo_depth_fftshift_enabled()
-            and bool(getattr(self, "holo_center_zero_depth_in_display", False))
+            self.current_depth_fftshift_enabled()
+            and bool(getattr(self, "depth_center_zero_depth_in_display", False))
         ):
             return max(0, min(total_samples - pixel_range, total_samples // 2 - pixel_range // 2))
         return max(0, min(int(pixel_start), total_samples - pixel_range))
 
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
-        if self.current_holo_depth_fftshift_enabled():
+        if self.current_depth_fftshift_enabled():
             fft_data = xp.fft.fftshift(fft_data, axes=1)
         pixel_range = max(1, min(int(pixel_range), int(fft_data.shape[1])))
         pixel_start = self.depth_crop_start(fft_data.shape[1], pixel_start, pixel_range)
