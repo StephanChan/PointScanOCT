@@ -89,7 +89,7 @@ HOLO_PRINT_FILTER_INFO = True
 # Set True to print GPU processing timing for each FFT request. Timing forces
 # CUDA synchronization around each profiled step, so use it for diagnostics and
 # set it back to False for maximum acquisition throughput.
-GPU_PROFILE_TIMING_ENABLED = True
+GPU_PROFILE_TIMING_ENABLED = False
 
 # Set True to print one timing line per processed GPU chunk. False prints only
 # one compact summary per FFT request.
