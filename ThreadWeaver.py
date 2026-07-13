@@ -583,7 +583,7 @@ class WeaverThread(QThread):
         # self.DnSQueue.put(an_action)
         frame_rate = self.ui.FrameRate_DH.value()
         if acq_mode in tuple(mode for mode in BLINE_MODES if mode in CONTINUOUS_MODES):
-            self.ui.FrameRate_DH.setValue(20)
+            self.ui.FrameRate_DH.setValue(50)
         an_action = DActionField('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
@@ -735,16 +735,16 @@ class WeaverThread(QThread):
         return 300.0
 
     def get_background(self):
-        an_action = AODOActionField('rotate_servo_out')
-        self.AODOQueue.put(an_action)
-        self.StagebackQueue.get()
+        # an_action = AODOActionField('rotate_servo_out')
+        # self.AODOQueue.put(an_action)
+        # self.StagebackQueue.get()
         # print('start getting background...')
         acq_mode = self.ui.ACQMode.currentText()
         fft_device = self.ui.FFTDevice.currentText()
         BAvg = self.ui.BlineAVG.value()
         self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_BLINE)
         self.ui.FFTDevice.setCurrentText('None')
-        self.ui.BlineAVG.setValue(100)
+        self.ui.BlineAVG.setValue(20)
         ############################# measure an Aline
         # print('acquiring Bline')
         self.ui.RunButton.setChecked(True)
@@ -786,9 +786,9 @@ class WeaverThread(QThread):
         self.ui.FFTDevice.setCurrentText(fft_device)
         self.ui.BlineAVG.setValue(BAvg)
         
-        an_action = AODOActionField('rotate_servo_back')
-        self.AODOQueue.put(an_action)
-        self.StagebackQueue.get()
+        # an_action = AODOActionField('rotate_servo_back')
+        # self.AODOQueue.put(an_action)
+        # self.StagebackQueue.get()
         return "Background measurement completed."
 
     def get_background_cscan(self):

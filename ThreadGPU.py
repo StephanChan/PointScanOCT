@@ -48,7 +48,7 @@ GPU_SPECTRAL_BASELINE_WINDOW_SIZE = 35
 # Off-axis holography X-sideband filtering -----------------------------------
 # Set True to enable: FFT along X, keep one spatial sideband, IFFT back, then
 # remove the reference carrier before the axial FFT. Leave False for normal OCT.
-HOLO_X_FILTER_ENABLED = False
+HOLO_X_FILTER_ENABLED = True
 
 # Physical reference tilt model. The sideband center is calculated as
 # kx = 2*pi*sin(theta)/lambda0 unless HOLO_X_FILTER_CENTER_FRACTION_OVERRIDE

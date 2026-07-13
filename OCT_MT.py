@@ -58,7 +58,7 @@ memoryCount = 16
 
 
 # Number of processed Cscan Y-lines per streaming package.
-CSCAN_PACKAGE_Y_LINES = 64
+CSCAN_PACKAGE_Y_LINES = 128
 global Memory
 Memory = list(range(memoryCount))
 
