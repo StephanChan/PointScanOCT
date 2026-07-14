@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Main camera control thread using Amcam SDK with PyQt GUI integration.
 Includes functionality for live preview, snap image, exposure control,
@@ -539,6 +539,7 @@ class Camera(QThread):
 
             self.DbackQueue.put(0)
             BlinesCount = 0
+            package_start_time = time.perf_counter()
             consecutive_timeouts = 0
             while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
                 t_dq = time.perf_counter()
@@ -718,6 +719,7 @@ class Camera(QThread):
         # print(NBlines)
         # Number of frames written into the current memory slot.
         BlinesCount = 0
+        package_start_time = time.perf_counter()
         current_slot = self.MemoryFreeQueue.get() if hasattr(self, "MemoryFreeQueue") else self.MemoryLoc
         self.DbackQueue.put(0)
         # print('start dbackqueue size:', self.DbackQueue.qsize())
@@ -779,4 +781,8 @@ class Camera(QThread):
                 },
             )
             self.DatabackQueue.put(an_action)
+
+
+
+
 

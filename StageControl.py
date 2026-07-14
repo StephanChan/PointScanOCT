@@ -85,10 +85,13 @@ class ZC300MotorController:
 
     def close(self):
         """"""
-        if self.connected:
-            self.zc.zc300_close()
-            self.connected = False
-            print("ZC300 ")
+        try:
+            if self.connected:
+                self.zc.zc300_close()
+                self.connected = False
+                print("ZC300 ")
+        except:
+            pass
 
     def __del__(self):
         self.close()

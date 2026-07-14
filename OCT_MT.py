@@ -1,4 +1,4 @@
-
+﻿
 # -*- coding: utf-8 -*-
 """
 Created on Sun Dec 10 20:14:40 2023
@@ -18,16 +18,13 @@ Created on Sun Dec 10 20:14:40 2023
 
 # TODO: revisit pause handling so it does not depend on thread interruption.
 import sys
-import numpy as np
 from queue import Queue
 from PyQt5.QtWidgets import QApplication
-from Dialogs import StageDialog
 from PyQt5 import QtWidgets as QW
-import PyQt5.QtCore as qc
 from PyQt5.QtCore import QObject, pyqtSignal
 from mainWindow import MainWindow
-from ActionFields import *
-from ActionTypes import AcqTypes, DnSActions, GPUActions, WeaverActions
+from ActionFields import AODOActionField, EXITField, GPUActionField, WeaverActionField
+from ActionTypes import AcqTypes, GPUActions, WeaverActions
 from FileNaming import FileNaming
 from Generaic_functions import LOG
 import time
@@ -36,7 +33,6 @@ from Display_rendering import (
     render_bline_ready,
     render_cscan_ready,
 )
-from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN, get_objective_spec
 
 CONTINUOUS_ACQ_MODES = (
     AcqTypes.CONTINUOUS_BLINE,
@@ -54,11 +50,11 @@ LIVE_ONLY_MODES = (
 )
 # Shared raw-data ring buffer. More than two slots allows acquisition and processing to overlap safely.
 global memoryCount
-memoryCount = 16
+memoryCount = 4
 
 
 # Number of processed Cscan Y-lines per streaming package.
-CSCAN_PACKAGE_Y_LINES = 128
+CSCAN_PACKAGE_Y_LINES = 64
 global Memory
 Memory = list(range(memoryCount))
 
@@ -90,6 +86,8 @@ DbackQueue = Queue()
 DatabackQueue = Queue()
 # Queue carrying memory slots that are safe for the camera to reuse.
 MemoryFreeQueue = Queue()
+# DnS returns GPU pinned-output buffers only after processing/saving is done.
+PinnedOutputFreeQueue = Queue()
 
         
 # Thread wrappers inject shared queues, memory, logging, and the UI bridge.
@@ -145,12 +143,10 @@ class GPUThread_2(GPUThread):
             self.DnSQueue = DnSQueue
             self.GPU2weaverQueue = GPU2weaverQueue
             self.MemoryFreeQueue = MemoryFreeQueue
+            self.PinnedOutputFreeQueue = PinnedOutputFreeQueue
             self.log = log
             self.SIM = SIM
             self.AMPLIFICATION = 100#AMPLIFICATION
-            self.default_static_normalization_mean = PHOTONFOCUS_STATIC_NORMALIZATION_MEAN
-            self.static_normalization_mean = self.default_static_normalization_mean
-            self.dynamic_use_first_frame_background = False
             self.ui_bridge = None
             
 # Galvo / stage control thread wrapper.
@@ -174,6 +170,7 @@ class DnSThread_2(DnSThread):
         self.queue = DnSQueue
         self.log = log
         self.use_maya = use_maya
+        self.PinnedOutputFreeQueue = PinnedOutputFreeQueue
         self.ui_bridge = None
         
 
@@ -220,11 +217,6 @@ class GUI(MainWindow):
             self.ui.ZDepthBar.valueChanged.connect(self.Update_contrast)
         if hasattr(self.ui, "BlineBar"):
             self.ui.BlineBar.valueChanged.connect(self.Update_contrast)
-        if hasattr(self.ui, "DynContrast"):
-            self.ui.DynContrast.valueChanged.connect(self.Update_contrast)
-        # self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
-        # self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
-
         self.ui.redoBG.clicked.connect(self.redo_background)
         self.ui.redoSurf.clicked.connect(self.redo_surface)
         self.ui.BG_DIR.textChanged.connect(self.update_background)
@@ -649,8 +641,9 @@ class GUI(MainWindow):
             print('acquisition resumed...')
       
     def Stop_task(self):
-        self.ui.statusbar.showMessage('acquisition stopped...')
-        print('acquisition stopped...')
+        # RunButton state already communicates the stop request; keep routine
+        # stop handling quiet so it does not overwrite meaningful errors.
+        pass
         
     def update_Dispersion(self):
         an_action = GPUActionField(GPUActions.UPDATE_DISPERSION)
@@ -673,9 +666,6 @@ class GUI(MainWindow):
             if payload is not None:
                 render_cscan_ready(self.ui, payload, follow_latest_bline=False)
 
-    def Update_contrast_Dyn(self):
-        self.Update_contrast()
-        
     # def redo_dispersion_compensation(self):
     #     an_action = WeaverActionField('dispersion_compensation')
     #     WeaverQueue.put(an_action)
@@ -736,6 +726,7 @@ if __name__ == '__main__':
     sys.exit(app.exec_())
 
     
+
 
 
 

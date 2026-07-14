@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
-"""
-Central hardware specifications for the LineScanOCT control software.
+﻿# -*- coding: utf-8 -*-
+"""Central hardware specifications for the LineScanOCT control software.
 
 Keep physical hardware constants here instead of scattering them through GUI,
 waveform, and thread-control code.
@@ -30,7 +29,7 @@ class StageAxisSpec:
     init_speed_mm_s: float
 
 
-SYSTEM_MAGNIFICATION_4X = 4#2.85
+SYSTEM_MAGNIFICATION_4X = 4
 
 
 OBJECTIVE_SPECS = {
@@ -42,7 +41,7 @@ OBJECTIVE_SPECS = {
     ),
     "4X": ObjectiveSpec(
         name="4X",
-        angle_to_mm_ratio= 1.44 * 1.25,
+        angle_to_mm_ratio=1.44 * 1.25,
         camera_step_divisor=1.0,
         max_y_fov_mm=5.0,
     ),
@@ -81,8 +80,6 @@ STAGE_AXIS_SPECS = {
 }
 
 
-
-
 AODO_TRIGGER_OUT_PFI = "PFI3"
 AODO_TRIGGER_IN_PFI = "PFI7"
 AODO_DEFAULT_FRAME_RATE = 400
@@ -96,12 +93,7 @@ GPU_DEFAULT_STATIC_NORMALIZATION_MEAN = 40000.0
 GPU_STATIC_NORMALIZATION_EPS = 1e-3
 GPU_BACKGROUND_X_NORMALIZATION_EPS = 1e-3
 GPU_BACKGROUND_X_NORMALIZATION_ROOT_ORDER = 2.0
-GPU_DYNAMIC_NORMALIZATION_EPS = 1e-3
-GPU_DYNAMIC_UNIFORM_FILTER_SIZE = 10
-GPU_DYNAMIC_GAUSSIAN_SMOOTHING = False
-GPU_DYNAMIC_MAGNIFICATION = 1
 GPU_PRE_FFT_LOG_DEVIATION_THRESHOLD_PCT = 1.0
-GPU_DYNAMIC_INPUT_LOG_DEVIATION_THRESHOLD_PCT = 1.0
 GPU_PROFILE_TIMING_DEFAULT = False
 TIFF_APPEND_WRITES_DEFAULT = False
 
@@ -140,4 +132,3 @@ def digital_line_mask(line_name):
     if line_number < 0 or line_number > 31:
         raise KeyError(f"Unsupported digital line: {line_name}")
     return 1 << line_number
-

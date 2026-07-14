@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Created on Wed Jan 24 11:10:17 2024
 
@@ -45,6 +45,7 @@ CONTINUOUS_MODES = (
 )
 
 AUTO_BACKGROUND_PER_FOV_ENABLED = False
+WEAVER_ROUTINE_DIAGNOSTICS = False
 class WeaverThread(QThread):
     def __init__(self):
         super().__init__()
@@ -62,6 +63,10 @@ class WeaverThread(QThread):
 
     def finish_with_message(self, message):
         if message is None:
+            return
+        routine = "completed" in str(message).lower() or "stopped" in str(message).lower()
+        if routine and not WEAVER_ROUTINE_DIAGNOSTICS:
+            self.emit_status(message)
             return
         print(str(message))
         self.emit_status(message)
@@ -157,7 +162,7 @@ class WeaverThread(QThread):
                 drained += 1
         for item in kept:
             queue.put(item)
-        if drained:
+        if drained and WEAVER_ROUTINE_DIAGNOSTICS:
             message = f"Cleared {drained} stale item(s) from {name}."
             print(message)
         return drained
@@ -170,7 +175,7 @@ class WeaverThread(QThread):
 
         drained_gpu = self.drain_queue(self.GPUQueue, "GPUQueue", keep=keep_gpu_item)
         drained_camera = self.drain_queue(self.DatabackQueue, "DatabackQueue")
-        if drained_gpu or drained_camera:
+        if (drained_gpu or drained_camera) and WEAVER_ROUTINE_DIAGNOSTICS:
             suffix = f" ({reason})" if reason else ""
             print(
                 "Continuous backlog drain complete"
@@ -193,8 +198,6 @@ class WeaverThread(QThread):
     def current_save_enabled(self):
         return self.ui.Save.isChecked()
 
-    def current_dynamic_enabled(self):
-        return False
 
     def current_geometry(self):
         return None
@@ -220,8 +223,6 @@ class WeaverThread(QThread):
     def current_depth_range(self):
         return int(self.ui.DepthRange.value())
 
-    def current_realtime_dynamic_enabled(self):
-        return False
 
     def current_pre_avg_factor(self):
         if self.current_fft_device() not in ['GPU', 'CPU']:
@@ -237,18 +238,6 @@ class WeaverThread(QThread):
             return int(raw_frame_count)
         return max(1, complete_frames // pre_avg_factor)
 
-    def finalize_partial_dynamic_naming(self, acq_mode):
-        if (
-            not self.current_save_enabled()
-            or not self.current_dynamic_enabled()
-            or self.current_realtime_dynamic_enabled()
-        ):
-            return
-        if self.file_naming.dynamic_bline_idx == 1:
-            return
-        if acq_mode in CSCAN_MODES:
-            self.file_naming.increment_cscan()
-            self.file_naming.reset_dynamic_bline_idx()
 
     def build_filename_bundle(
         self,
@@ -272,71 +261,15 @@ class WeaverThread(QThread):
         z_pixels = self.current_nsamples() if raw else self.current_depth_range()
         repeat_count = raw_frames if raw else self.current_processed_repeat_count(raw_frames)
         y_pixels = self.current_y_pixels()
-        dynamic_bline_idx = int(self.file_naming.dynamic_bline_idx)
         bundle = {}
 
         if acq_mode in BLINE_MODES:
             filename = self.file_naming.get_filename("bline", acq_mode, [repeat_count, x_pixels, z_pixels])
             bundle = {"filename": filename, "log_filename": filename}
-            if self.current_realtime_dynamic_enabled():
-                bundle["dynamic_filename"] = self.file_naming.get_filename(
-                    "bline_dyn",
-                    acq_mode,
-                    [repeat_count, x_pixels, z_pixels],
-                )
-                bundle["dynamic_rgb_filename"] = self.file_naming.get_filename(
-                    "bline_dyn_rgb",
-                    acq_mode,
-                    [repeat_count, x_pixels, z_pixels],
-                )
             self.file_naming.increment_bline()
             return bundle
 
         if acq_mode in CSCAN_MODES:
-            if self.current_dynamic_enabled():
-                if self.current_realtime_dynamic_enabled():
-                    dynamic_filename = self.file_naming.get_filename(
-                        "cscan_dyn",
-                        acq_mode,
-                        [y_pixels, x_pixels, z_pixels],
-                        ypixels=y_pixels,
-                    )
-                    dynamic_rgb_filename = self.file_naming.get_filename(
-                        "cscan_dyn_rgb",
-                        acq_mode,
-                        [y_pixels, x_pixels, z_pixels],
-                    )
-                    mean_filename = self.file_naming.get_filename(
-                        "cscan_mean",
-                        acq_mode,
-                        [y_pixels, x_pixels, z_pixels],
-                    )
-                    bundle = {
-                        "dynamic_filename": dynamic_filename,
-                        "dynamic_rgb_filename": dynamic_rgb_filename,
-                        "mean_filename": mean_filename,
-                        "log_filename": dynamic_filename,
-                    }
-                    if dynamic_bline_idx == y_pixels:
-                        self.file_naming.increment_cscan()
-                        self.file_naming.reset_dynamic_bline_idx()
-                    else:
-                        self.file_naming.increment_dynY()
-                    return bundle
-
-                bline_filename = self.file_naming.get_filename(
-                    "cscan_bline",
-                    acq_mode,
-                    [repeat_count, x_pixels, z_pixels],
-                    ypixels=y_pixels,
-                )
-                bundle = {
-                    "filename": bline_filename,
-                    "log_filename": bline_filename,
-                }
-                self.file_naming.advance_cscan_dynamic_bline(y_pixels)
-                return bundle
-
             if package_total_frames is not None:
                 total_y_pixels = max(1, int(package_total_frames) // max(1, self.current_bline_avg()))
                 active = getattr(self, "_active_cscan_filename_bundle", None)
@@ -403,7 +336,6 @@ class WeaverThread(QThread):
         alines_per_bline = self.current_alines_per_bline()
         configured_bline_avg = self.current_bline_avg()
         configured_y_pixels = self.current_y_pixels()
-        configured_dynamic = self.current_dynamic_enabled()
         configured_acq_mode = self.current_acq_mode()
         # print(self.ui.PixelFormat_display.text())
         if camera_pixel_format(self.ui) in ['Mono8']:
@@ -477,7 +409,6 @@ class WeaverThread(QThread):
         acquisition_failed = False
         for iAcq in range(self.NAcq):
             start = time.time()
-            dynamic_bline_idx = None
             ######################################### collect data
             # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
             # print('waiting for camera data...')
@@ -526,7 +457,6 @@ class WeaverThread(QThread):
                                 data=self.data,
                                 raw=True,
                                 context=context,
-                                dynamic_bline_idx=dynamic_bline_idx,
                                 filename_bundle=filename_bundle,
                                 skip_save=skip_save,
                                 package_start=package_start,
@@ -546,7 +476,6 @@ class WeaverThread(QThread):
                             acq_mode=acq_mode,
                             memory_slot=memory_slot,
                             context=context,
-                            dynamic_bline_idx=dynamic_bline_idx,
                             filename_bundle=filename_bundle,
                             skip_save=skip_save,
                             package_start=package_start,
@@ -560,7 +489,8 @@ class WeaverThread(QThread):
                         message = f"{DnS_action} completed."
                     break
                 except:
-                    print(f"{DnS_action}: waiting for camera data...")
+                    if WEAVER_ROUTINE_DIAGNOSTICS:
+                        print(f"{DnS_action}: waiting for camera data...")
             if acquisition_failed:
                 break
                     
@@ -569,7 +499,6 @@ class WeaverThread(QThread):
         an_action = AODOActionField('CloseTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get() # wait for AODO CloseTask
-        self.finalize_partial_dynamic_naming(acq_mode)
         self.wait_for_processing_barrier(label=f"finishing {DnS_action}", stop_if_run_unchecked=False)
         print(message)
         return message
@@ -687,19 +616,20 @@ class WeaverThread(QThread):
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get() # wait for AODO CloseTask
         # digitizer will close automatically
-        self.finalize_partial_dynamic_naming(acq_mode)
         if camera_error_message is None:
             message = f"{DnS_action} stopped. Received {data_backs} camera buffer(s)."
             if skipped_fft_actions:
                 message += f" Skipped {skipped_fft_actions} stale continuous FFT request(s)."
         else:
             message = camera_error_message
-        print(message)
+        if WEAVER_ROUTINE_DIAGNOSTICS:
+            print(message)
         self.drain_continuous_backlog(reason=f"after {DnS_action}")
-        an_action = GPUActionField(GPUActions.DISPLAY_FFT_ACTIONS)
-        self.GPUQueue.put(an_action)
-        an_action = GPUActionField(GPUActions.DISPLAY_COUNTS, context=DnS_action)
-        self.GPUQueue.put(an_action)
+        if WEAVER_ROUTINE_DIAGNOSTICS:
+            an_action = GPUActionField(GPUActions.DISPLAY_FFT_ACTIONS)
+            self.GPUQueue.put(an_action)
+            an_action = GPUActionField(GPUActions.DISPLAY_COUNTS, context=DnS_action)
+            self.GPUQueue.put(an_action)
         self.wait_for_processing_barrier(label=f"finishing {DnS_action}", stop_if_run_unchecked=False)
         self.ui.FrameRate_DH.setValue(frame_rate)
         return message
@@ -914,5 +844,7 @@ class WeaverThread(QThread):
         
         
     
+
+
 
 
