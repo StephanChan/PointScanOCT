@@ -1173,7 +1173,7 @@ class GPUThread(QThread):
 
     def update_Dispersion(self):
         samples = self.current_nsamples()
-        interp_path = self.ui.InD_DIR.text()
+        interp_path = os.path.normpath(str(self.ui.InD_DIR.text()).strip())
         self.intpX = None
         self.intpXp = None
         self.indice1 = None
@@ -1185,32 +1185,92 @@ class GPUThread(QThread):
         self.indice1_gpu = None
         self.indice2_gpu = None
         self.dispersion_gpu = None
-        if os.path.isfile(interp_path + "/intpX.bin"):
-            self.intpX = np.fromfile(interp_path + "/intpX.bin", dtype=np.float32)
-            self.intpX_gpu = cupy.asarray(self.intpX, dtype=cupy.float32)
-        if os.path.isfile(interp_path + "/intpXp.bin"):
-            self.intpXp = np.fromfile(interp_path + "/intpXp.bin", dtype=np.float32)
-            self.intpXp_gpu = cupy.asarray(self.intpXp, dtype=cupy.float32)
-        if os.path.isfile(interp_path + "/indice1.bin"):
-            self.indice1 = np.fromfile(interp_path + "/indice1.bin", dtype=np.uint16)
-            self.indice1_gpu = cupy.asarray(self.indice1, dtype=cupy.ushort)
-        if os.path.isfile(interp_path + "/indice2.bin"):
-            self.indice2 = np.fromfile(interp_path + "/indice2.bin", dtype=np.uint16)
-            self.indice2_gpu = cupy.asarray(self.indice2, dtype=cupy.ushort)
-        if self.indice1 is not None and self.indice2 is not None:
-            self.indice = np.vstack([self.indice1, self.indice2])
-        if os.path.isfile(interp_path + "/dspPhase.bin"):
-            self.dispersion = np.fromfile(interp_path + "/dspPhase.bin", dtype=np.complex64)
-            self.dispersion_gpu = cupy.asarray(self.dispersion, dtype=cupy.complex64)
+
+        if not interp_path or not os.path.isdir(interp_path):
+            message = f"Interpolation/dispersion folder not found: {interp_path or '<empty>'}"
+            print(message)
+            self.emit_status(message)
+            self.interp = False
+            return
+
+        def load_dispersion_file(filepath):
+            dispersion = np.fromfile(filepath, dtype=np.complex64)
+            if dispersion.size == samples:
+                return dispersion, "complex64"
+            phase = np.fromfile(filepath, dtype=np.float32)
+            if phase.size == samples:
+                return np.exp(1j * phase).astype(np.complex64), "float32 phase"
+            return dispersion, "complex64"
+
+        calibration_files = (
+            ("intpX", "intpX.bin", np.float32),
+            ("intpXp", "intpXp.bin", np.float32),
+            ("indice1", "indice1.bin", np.uint16),
+            ("indice2", "indice2.bin", np.uint16),
+            ("dispersion", "dspPhase.bin", np.complex64),
+        )
+        missing = []
+        loaded_formats = {}
+        file_sizes = {}
+        try:
+            for attr, filename, dtype in calibration_files:
+                filepath = os.path.join(interp_path, filename)
+                if not os.path.isfile(filepath):
+                    missing.append(filename)
+                    continue
+                file_sizes[attr] = os.path.getsize(filepath)
+                if attr == "dispersion":
+                    value, loaded_format = load_dispersion_file(filepath)
+                else:
+                    value = np.fromfile(filepath, dtype=dtype)
+                    loaded_format = np.dtype(dtype).name
+                setattr(self, attr, value)
+                loaded_formats[attr] = loaded_format
+        except Exception as error:
+            message = f"Interpolation/dispersion calibration could not be loaded from {interp_path}: {error}"
+            print(message)
+            self.emit_status(message)
+            self.interp = False
+            return
+
         arrays = (self.intpX, self.intpXp, self.indice1, self.indice2, self.dispersion)
-        self.interp = all(array is not None and array.size == samples for array in arrays)
-        if not self.interp and any(array is not None for array in arrays):
+        if missing:
             message = (
-                "Interpolation/dispersion calibration is incomplete or does not match "
-                f"the current spectral sample count ({samples}). Processing without calibration."
+                "Interpolation/dispersion calibration is incomplete. Missing file(s): "
+                f"{', '.join(missing)} in {interp_path}"
             )
             print(message)
             self.emit_status(message)
+            self.interp = False
+            return
+
+        self.interp = all(array is not None and array.size == samples for array in arrays)
+        if not self.interp:
+            sizes = ", ".join(
+                (
+                    f"{name}={getattr(self, name).size if getattr(self, name) is not None else 'missing'}"
+                    f" ({loaded_formats.get(name, 'not loaded')}, {file_sizes.get(name, 0)} bytes)"
+                )
+                for name, _, _ in calibration_files
+            )
+            message = (
+                "Interpolation/dispersion calibration is incomplete or does not match "
+                f"the current spectral sample count ({samples}). Sizes: {sizes}. "
+                "Processing without calibration."
+            )
+            print(message)
+            self.emit_status(message)
+            return
+
+        self.indice = np.vstack([self.indice1, self.indice2])
+        self.intpX_gpu = cupy.asarray(self.intpX, dtype=cupy.float32)
+        self.intpXp_gpu = cupy.asarray(self.intpXp, dtype=cupy.float32)
+        self.indice1_gpu = cupy.asarray(self.indice1, dtype=cupy.ushort)
+        self.indice2_gpu = cupy.asarray(self.indice2, dtype=cupy.ushort)
+        self.dispersion_gpu = cupy.asarray(self.dispersion, dtype=cupy.complex64)
+        message = f"Interpolation/dispersion calibration loaded from {interp_path}."
+        print(message)
+        self.emit_status(message)
 
     def update_background(self):
         samples = self.current_nsamples()
