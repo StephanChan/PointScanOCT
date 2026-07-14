@@ -1171,6 +1171,36 @@ class GPUThread(QThread):
         if intpX_gpu is None:
             self.update_Dispersion()
 
+    def load_interpolation_indices(self, filename, samples):
+        raw = np.fromfile(filename, dtype=np.uint16)
+        expected = 2 * samples
+        if raw.size != expected:
+            raise ValueError(
+                f"intpIndice.bin has {raw.size} values, expected {expected} "
+                f"for {samples} samples."
+            )
+
+        max_valid = self.intpX.size - 1
+        candidates = [
+            ("2xsamples", raw.reshape([2, samples])),
+            ("samplesx2", raw.reshape([samples, 2]).T),
+        ]
+        diagnostics = []
+        for layout_name, candidate in candidates:
+            min_index = int(candidate.min())
+            max_index = int(candidate.max())
+            diagnostics.append(f"{layout_name}: min={min_index}, max={max_index}")
+            if min_index >= 0 and max_index <= max_valid:
+                if layout_name != "2xsamples":
+                    print(f"Interpolation index table loaded as {layout_name}.")
+                return candidate
+
+        raise ValueError(
+            "Interpolation index table is out of range for intpX. "
+            f"intpX length={self.intpX.size}, valid index=0-{max_valid}; "
+            + "; ".join(diagnostics)
+        )
+
     def update_Dispersion(self):
         samples = self.current_nsamples()
         interp_path = os.path.normpath(str(self.ui.InD_DIR.text()).strip())
@@ -1193,21 +1223,11 @@ class GPUThread(QThread):
             self.interp = False
             return
 
-        def load_dispersion_file(filepath):
-            dispersion = np.fromfile(filepath, dtype=np.complex64)
-            if dispersion.size == samples:
-                return dispersion, "complex64"
-            phase = np.fromfile(filepath, dtype=np.float32)
-            if phase.size == samples:
-                return np.exp(1j * phase).astype(np.complex64), "float32 phase"
-            return dispersion, "complex64"
-
         calibration_files = (
             ("intpX", "intpX.bin", np.float32),
             ("intpXp", "intpXp.bin", np.float32),
-            ("indice1", "indice1.bin", np.uint16),
-            ("indice2", "indice2.bin", np.uint16),
-            ("dispersion", "dspPhase.bin", np.complex64),
+            ("indice", "intpIndice.bin", np.uint16),
+            ("dispersion", "dspPhase.bin", np.float32),
         )
         missing = []
         loaded_formats = {}
@@ -1219,8 +1239,13 @@ class GPUThread(QThread):
                     missing.append(filename)
                     continue
                 file_sizes[attr] = os.path.getsize(filepath)
-                if attr == "dispersion":
-                    value, loaded_format = load_dispersion_file(filepath)
+                if attr == "indice":
+                    value = self.load_interpolation_indices(filepath, samples)
+                    loaded_format = "uint16 index table"
+                elif attr == "dispersion":
+                    phase = np.fromfile(filepath, dtype=np.float32)
+                    value = np.exp(-1j * phase.reshape([1, phase.size])).astype(np.complex64)
+                    loaded_format = "float32 phase"
                 else:
                     value = np.fromfile(filepath, dtype=dtype)
                     loaded_format = np.dtype(dtype).name
@@ -1233,7 +1258,6 @@ class GPUThread(QThread):
             self.interp = False
             return
 
-        arrays = (self.intpX, self.intpXp, self.indice1, self.indice2, self.dispersion)
         if missing:
             message = (
                 "Interpolation/dispersion calibration is incomplete. Missing file(s): "
@@ -1244,11 +1268,23 @@ class GPUThread(QThread):
             self.interp = False
             return
 
-        self.interp = all(array is not None and array.size == samples for array in arrays)
+        self.indice1 = self.indice[0, :]
+        self.indice2 = self.indice[1, :]
+        arrays = (self.intpX, self.intpXp, self.indice1, self.indice2, self.dispersion)
+        self.interp = (
+            self.intpX is not None
+            and self.intpX.size == samples
+            and self.intpXp is not None
+            and self.intpXp.size == samples
+            and self.indice is not None
+            and self.indice.shape == (2, samples)
+            and self.dispersion is not None
+            and self.dispersion.size == samples
+        )
         if not self.interp:
             sizes = ", ".join(
                 (
-                    f"{name}={getattr(self, name).size if getattr(self, name) is not None else 'missing'}"
+                    f"{name}={getattr(self, name).shape if getattr(self, name) is not None else 'missing'}"
                     f" ({loaded_formats.get(name, 'not loaded')}, {file_sizes.get(name, 0)} bytes)"
                 )
                 for name, _, _ in calibration_files
@@ -1262,11 +1298,10 @@ class GPUThread(QThread):
             self.emit_status(message)
             return
 
-        self.indice = np.vstack([self.indice1, self.indice2])
         self.intpX_gpu = cupy.asarray(self.intpX, dtype=cupy.float32)
         self.intpXp_gpu = cupy.asarray(self.intpXp, dtype=cupy.float32)
-        self.indice1_gpu = cupy.asarray(self.indice1, dtype=cupy.ushort)
-        self.indice2_gpu = cupy.asarray(self.indice2, dtype=cupy.ushort)
+        self.indice1_gpu = cupy.asarray(self.indice1, dtype=cupy.uint16)
+        self.indice2_gpu = cupy.asarray(self.indice2, dtype=cupy.uint16)
         self.dispersion_gpu = cupy.asarray(self.dispersion, dtype=cupy.complex64)
         message = f"Interpolation/dispersion calibration loaded from {interp_path}."
         print(message)
