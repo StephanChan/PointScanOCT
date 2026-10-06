@@ -21,15 +21,17 @@ from PyQt5.QtCore import Qt
 # from matplotlib.path import Path
 # from scipy.signal import hilbert
 import datetime
-import cv2
+try:
+    import cv2
+except Exception:
+    cv2 = None
 from UsbCamera import open_usb_camera, orient_usb_frame
-from CameraUi import effective_camera_sample_count, camera_pixel_format
+from CameraUi import effective_camera_sample_count, camera_pixel_format, x_pixel_count
 from HardwareSpecs import get_objective_spec
 
 BLINE_MODES = (
-    AcqTypes.FINITE_BLINE,
+    AcqTypes.FINITE_BSCAN,
     AcqTypes.CONTINUOUS_BLINE,
-    AcqTypes.CONTINUOUS_KX,
 )
 
 ALINE_MODES = ()
@@ -40,7 +42,6 @@ CSCAN_MODES = (
 
 CONTINUOUS_MODES = (
     AcqTypes.CONTINUOUS_BLINE,
-    AcqTypes.CONTINUOUS_KX,
     AcqTypes.CONTINUOUS_CSCAN,
 )
 
@@ -77,19 +78,21 @@ class WeaverThread(QThread):
             try:
                 if self.item.action in (
                     AcqTypes.CONTINUOUS_BLINE,
-                    AcqTypes.CONTINUOUS_KX,
+                    "ContinueBline",
                     AcqTypes.CONTINUOUS_CSCAN,
                 ):
                     if not self.wait_for_processing_barrier(label=f"starting {self.item.action}"):
                         message = f"{self.item.action} stopped by user."
                         self.finish_with_message(message)
                         raise StopIteration
+                    acq_mode = AcqTypes.CONTINUOUS_BLINE if self.item.action == "ContinueBline" else self.item.action
                     self.InitMemory()
-                    message = self.RptScan(DnS_action=self.item.action, acq_mode=self.item.action)
+                    message = self.RptScan(DnS_action=acq_mode, acq_mode=acq_mode)
                     self.finish_with_message(message)
                     
                 elif self.item.action in (
-                    AcqTypes.FINITE_BLINE,
+                    AcqTypes.FINITE_BSCAN,
+                    AcqTypes.X_FREQUENCY,
                     AcqTypes.FINITE_CSCAN,
                 ):
                     if not self.wait_for_processing_barrier(label=f"starting {self.item.action}"):
@@ -215,7 +218,7 @@ class WeaverThread(QThread):
         return float(objective.max_y_fov_mm)
 
     def current_alines_per_bline(self):
-        return max(1, int(self.ui.AlinesPerBline.value()))
+        return x_pixel_count(self.ui)
 
     def current_nsamples(self):
         return effective_camera_sample_count(self.ui)
@@ -225,18 +228,10 @@ class WeaverThread(QThread):
 
 
     def current_pre_avg_factor(self):
-        if self.current_fft_device() not in ['GPU', 'CPU']:
-            return 1
-        return self.current_bline_avg()
+        return 1
 
     def current_processed_repeat_count(self, raw_frame_count):
-        pre_avg_factor = self.current_pre_avg_factor()
-        if pre_avg_factor <= 1:
-            return int(raw_frame_count)
-        complete_frames = (int(raw_frame_count) // pre_avg_factor) * pre_avg_factor
-        if complete_frames < pre_avg_factor:
-            return int(raw_frame_count)
-        return max(1, complete_frames // pre_avg_factor)
+        return int(raw_frame_count)
 
 
     def build_filename_bundle(
@@ -257,9 +252,9 @@ class WeaverThread(QThread):
 
         raw_shape = self.Memory[memory_slot].shape
         raw_frames = int(raw_shape[0] if package_frame_count is None else package_frame_count)
-        x_pixels = int(raw_shape[1])
+        x_pixels = self.current_alines_per_bline()
         z_pixels = self.current_nsamples() if raw else self.current_depth_range()
-        repeat_count = raw_frames if raw else self.current_processed_repeat_count(raw_frames)
+        repeat_count = max(1, raw_frames // max(1, x_pixels))
         y_pixels = self.current_y_pixels()
         bundle = {}
 
@@ -271,7 +266,11 @@ class WeaverThread(QThread):
 
         if acq_mode in CSCAN_MODES:
             if package_total_frames is not None:
-                total_y_pixels = max(1, int(package_total_frames) // max(1, self.current_bline_avg()))
+                total_y_pixels = max(
+                    1,
+                    int(package_total_frames)
+                    // max(1, self.current_alines_per_bline() * self.current_bline_avg()),
+                )
                 active = getattr(self, "_active_cscan_filename_bundle", None)
                 if active is None:
                     filename = self.file_naming.get_filename(
@@ -327,7 +326,11 @@ class WeaverThread(QThread):
 
     def cscan_package_frame_count(self):
         package_y_lines = int(getattr(self, 'cscan_package_y_lines', 64))
-        return max(1, package_y_lines) * max(1, self.current_bline_avg())
+        return (
+            max(1, package_y_lines)
+            * max(1, self.current_alines_per_bline())
+            * max(1, self.current_bline_avg())
+        )
 
     def InitMemory(self):
         #################################################################
@@ -344,24 +347,24 @@ class WeaverThread(QThread):
             data_type =  np.uint16
             
         self.reset_memory_free_queue()
-        total_cscan_frames = configured_y_pixels * configured_bline_avg
+        total_cscan_frames = configured_y_pixels * alines_per_bline * configured_bline_avg
         cscan_package_frames = min(total_cscan_frames, self.cscan_package_frame_count())
 
         for ii in range(self.memoryCount):
              if configured_acq_mode in (
-                 AcqTypes.FINITE_BLINE,
+                 AcqTypes.FINITE_BSCAN,
                  AcqTypes.CONTINUOUS_BLINE,
-                 AcqTypes.CONTINUOUS_KX,
+                 AcqTypes.X_FREQUENCY,
              ):
-                 self.Memory[ii]=np.zeros([configured_bline_avg, alines_per_bline, samples], dtype = data_type)
+                 self.Memory[ii]=np.zeros([alines_per_bline * configured_bline_avg, samples], dtype = data_type)
                  self.NAcq = 1
              elif configured_acq_mode == AcqTypes.CONTINUOUS_CSCAN:
-                 self.Memory[ii]=np.zeros([configured_y_pixels*configured_bline_avg, alines_per_bline, samples], dtype = data_type)
+                 self.Memory[ii]=np.zeros([configured_y_pixels*alines_per_bline*configured_bline_avg, samples], dtype = data_type)
                  self.NAcq = 1
              elif configured_acq_mode in (
                  AcqTypes.FINITE_CSCAN,
              ):
-                 self.Memory[ii]=np.zeros([cscan_package_frames, alines_per_bline, samples], dtype = data_type)
+                 self.Memory[ii]=np.zeros([cscan_package_frames, samples], dtype = data_type)
                  self.NAcq = int(np.ceil(total_cscan_frames / max(1, cscan_package_frames)))
                  self._active_cscan_filename_bundle = None
 
@@ -391,13 +394,23 @@ class WeaverThread(QThread):
         self.drain_queue(self.DbackQueue, "DbackQueue")
         an_action = DActionField('Acquire')
         self.DQueue.put(an_action)
-        self.DbackQueue.get()
+        camera_ready = True
+        try:
+            self.DbackQueue.get(timeout=3.0)
+        except Empty:
+            camera_ready = False
+            self.emit_status(
+                "Camera did not acknowledge acquisition start within 3 s; "
+                "starting galvo output anyway for scanner testing."
+            )
         t3=time.time()
 
         # print('current dbackqueue size:', self.DbackQueue.qsize())
         an_action = AODOActionField('StartTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
+        if not camera_ready:
+            print("Galvo-only test path active: no camera acknowledgement received.")
         t4=time.time()
         # print('\n')
         # print('Camera config took: ',round(t1-t0,3),'sec')
@@ -421,7 +434,7 @@ class WeaverThread(QThread):
                         acquisition_failed = True
                         break
                     # print('camera queue size:', self.DatabackQueue.qsize())
-                    # print('time to fetch data: '+str(round(time.time()-start,3))+'sec')
+                    print('time to fetch data: '+str(round(time.time()-start,3))+'sec')
                     memory_slot = an_action.memory_slot
                     package_start = getattr(an_action, "package_start", 0)
                     package_frame_count = getattr(an_action, "package_frame_count", None)
@@ -448,8 +461,9 @@ class WeaverThread(QThread):
                         self.release_memory_slot(memory_slot)
                         # In None mode, directly do display and save
                         if np.sum(self.data)<10:
-                            message = "No usable spectral data received."
+                            message = "Galvo output completed; no usable spectral data received."
                             print(message)
+                            self.emit_status(message)
                         else:
                             an_action = DnSActionField(
                                 DnS_action,
@@ -512,7 +526,7 @@ class WeaverThread(QThread):
         # self.DnSQueue.put(an_action)
         frame_rate = self.ui.FrameRate_DH.value()
         if acq_mode in tuple(mode for mode in BLINE_MODES if mode in CONTINUOUS_MODES):
-            self.ui.FrameRate_DH.setValue(200)
+            self.ui.FrameRate_DH.setValue(50)
         an_action = DActionField('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
@@ -528,12 +542,22 @@ class WeaverThread(QThread):
         self.drain_queue(self.DbackQueue, "DbackQueue")
         an_action = DActionField('Acquire')
         self.DQueue.put(an_action)
-        self.DbackQueue.get()
+        camera_ready = True
+        try:
+            self.DbackQueue.get(timeout=3.0)
+        except Empty:
+            camera_ready = False
+            self.emit_status(
+                "Camera did not acknowledge acquisition start within 3 s; "
+                "starting galvo output anyway for scanner testing."
+            )
 
         # start AODO 
         an_action = AODOActionField('StartTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
+        if not camera_ready:
+            print("Galvo-only test path active: no camera acknowledgement received.")
 
         ######################################################### repeat acquisition until Stop button is clicked
         while self.ui.RunButton.isChecked():
@@ -559,8 +583,10 @@ class WeaverThread(QThread):
                     self.release_memory_slot(memory_slot)
                     # In None mode, directly do display and save
                     if np.sum(self.data)<10:
-                        message = "No usable spectral data received."
-                        print(message)
+                        message = "Galvo output running; no usable spectral data received."
+                        if data_backs <= 1:
+                            print(message)
+                            self.emit_status(message)
                     else:
                         an_action = DnSActionField(
                             DnS_action,
@@ -665,107 +691,60 @@ class WeaverThread(QThread):
         return 300.0
 
     def get_background(self):
-        # an_action = AODOActionField('rotate_servo_out')
-        # self.AODOQueue.put(an_action)
-        # self.StagebackQueue.get()
-        # print('start getting background...')
-        acq_mode = self.ui.ACQMode.currentText()
-        fft_device = self.ui.FFTDevice.currentText()
-        BAvg = self.ui.BlineAVG.value()
-        self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_BLINE)
-        self.ui.FFTDevice.setCurrentText('None')
-        self.ui.BlineAVG.setValue(20)
-        ############################# measure an Aline
-        # print('acquiring Bline')
-        self.ui.RunButton.setChecked(True)
-        self.InitMemory()
-        self.SingleScan(
-            DnS_action=AcqTypes.FINITE_BLINE,
-            acq_mode=AcqTypes.FINITE_BLINE,
-            skip_save=True,
-        )
-        # print('got Bline')
-        # print(self.data.shape)
-        #######################################################################
-        Xpixels = self.ui.AlinesPerBline.value()
-        Yrpt = self.ui.BlineAVG.value()
-        BLINE = self.data.reshape([Yrpt, Xpixels, self.current_nsamples()])
-        
-        background = np.float32(np.mean(BLINE,0))
-        # plt.figure()
-        # plt.imshow(background)
-        # plt.show()
-        # background = np.smooth()
-        # print(background.shape)
-        filePath = self.ui.DIR.toPlainText()
-        current_time = datetime.datetime.now()
-        filePath = filePath + "/" + 'background_'+\
-            str(current_time.year)+'-'+\
-            str(current_time.month)+'-'+\
-            str(current_time.day)+'-'+\
-            str(current_time.hour)+'-'+\
-            str(current_time.minute)+'-'+\
-            str(current_time.second)+\
-            '.bin'
-        fp = open(filePath, 'wb')
-        background.tofile(fp)
-        fp.close()
-        
-        self.ui.BG_DIR.setText(filePath)
-        self.ui.ACQMode.setCurrentText(acq_mode)
-        self.ui.FFTDevice.setCurrentText(fft_device)
-        self.ui.BlineAVG.setValue(BAvg)
-        
-        # an_action = AODOActionField('rotate_servo_back')
-        # self.AODOQueue.put(an_action)
-        # self.StagebackQueue.get()
-        return "Background measurement completed."
-
-    def get_background_cscan(self):
+        background_bline_count = 10
         acq_mode = self.ui.ACQMode.currentText()
         fft_device = self.ui.FFTDevice.currentText()
         bline_avg = self.ui.BlineAVG.value()
+        try:
+            self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_BSCAN)
+            self.ui.FFTDevice.setCurrentText('None')
+            self.ui.BlineAVG.setValue(background_bline_count)
+            self.ui.RunButton.setChecked(True)
 
-        self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_CSCAN)
-        self.ui.FFTDevice.setCurrentText('None')
-        self.ui.BlineAVG.setValue(1)
+            self.InitMemory()
+            self.SingleScan(
+                DnS_action=AcqTypes.FINITE_BSCAN,
+                acq_mode=AcqTypes.FINITE_BSCAN,
+                skip_save=True,
+            )
 
-        self.ui.RunButton.setChecked(True)
-        self.InitMemory()
-        self.SingleScan(
-            DnS_action=AcqTypes.FINITE_CSCAN,
-            acq_mode=AcqTypes.FINITE_CSCAN,
-            skip_save=True,
-        )
+            x_pixels = x_pixel_count(self.ui)
+            samples = self.current_nsamples()
+            expected_frames = background_bline_count * x_pixels
+            if self.data.shape[0] < expected_frames:
+                return (
+                    "Background measurement failed: "
+                    f"received {self.data.shape[0]} A-lines, expected {expected_frames}."
+                )
+            bline_stack = self.data[:expected_frames].reshape([background_bline_count, x_pixels, samples])
+            background = np.float32(np.mean(bline_stack, axis=0))
 
-        background = np.float32(np.mean(self.data, axis=0))
+            filePath = self.ui.DIR.toPlainText()
+            current_time = datetime.datetime.now()
+            filePath = filePath + "/" + 'background_'+\
+                str(current_time.year)+'-'+\
+                str(current_time.month)+'-'+\
+                str(current_time.day)+'-'+\
+                str(current_time.hour)+'-'+\
+                str(current_time.minute)+'-'+\
+                str(current_time.second)+\
+                '.bin'
+            with open(filePath, 'wb') as fp:
+                background.tofile(fp)
 
-        filePath = self.ui.DIR.toPlainText()
-        current_time = datetime.datetime.now()
-        filePath = filePath + "/" + 'background_'+\
-            str(current_time.year)+'-'+\
-            str(current_time.month)+'-'+\
-            str(current_time.day)+'-'+\
-            str(current_time.hour)+'-'+\
-            str(current_time.minute)+'-'+\
-            str(current_time.second)+\
-            '.bin'
-        fp = open(filePath, 'wb')
-        background.tofile(fp)
-        fp.close()
-
-        self.ui.BG_DIR.setText(filePath)
-        self.ui.ACQMode.setCurrentText(acq_mode)
-        self.ui.FFTDevice.setCurrentText(fft_device)
-        self.ui.BlineAVG.setValue(bline_avg)
-        return "Background measurement completed."
+            self.ui.BG_DIR.setText(filePath)
+            return "Background measurement completed from 10 B-lines."
+        finally:
+            self.ui.ACQMode.setCurrentText(acq_mode)
+            self.ui.FFTDevice.setCurrentText(fft_device)
+            self.ui.BlineAVG.setValue(bline_avg)
     
     def get_surfCurve(self):
         
         print('start getting background...')
         acq_mode = self.ui.ACQMode.currentText()
         fft_device = self.ui.FFTDevice.currentText()
-        self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_BLINE)
+        self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_BSCAN)
         self.ui.FFTDevice.setCurrentText('GPU')
         if getattr(self, "gpu_thread", None) is not None:
             self.gpu_thread.return_processed_to_weaver = True
@@ -780,7 +759,7 @@ class WeaverThread(QThread):
         
         Zpixels = self.ui.DepthRange.value()
         # get number of X pixels
-        Xpixels = self.ui.AlinesPerBline.value()
+        Xpixels = x_pixel_count(self.ui)
         # get number of Y pixels
         Ypixels = self.ui.Ypixels.value()* self.ui.BlineAVG.value()
         # reshape into Ypixels x Xpixels x Zpixels
@@ -816,6 +795,8 @@ class WeaverThread(QThread):
     
     def live(self):
         """Continuously captures and displays video until RunButton is unchecked."""
+        if cv2 is None:
+            raise RuntimeError("OpenCV (cv2) is required for USB camera live view.")
         cap = open_usb_camera(configure_exposure=True)
     
         while self.ui.RunButton.isChecked():

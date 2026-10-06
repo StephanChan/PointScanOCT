@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5 import QtWidgets as QW
 from PyQt5.QtCore import QObject, pyqtSignal
 from mainWindow import MainWindow
-from ActionFields import AODOActionField, EXITField, GPUActionField, WeaverActionField
+from ActionFields import AODOActionField, DActionField, EXITField, GPUActionField, WeaverActionField
 from ActionTypes import AcqTypes, GPUActions, WeaverActions
 from FileNaming import FileNaming
 from Generaic_functions import LOG
@@ -36,12 +36,13 @@ from Display_rendering import (
 
 CONTINUOUS_ACQ_MODES = (
     AcqTypes.CONTINUOUS_BLINE,
-    AcqTypes.CONTINUOUS_KX,
+    "ContinueBline",
     AcqTypes.CONTINUOUS_CSCAN,
 )
 
 FINITE_ACQ_MODES = (
-    AcqTypes.FINITE_BLINE,
+    AcqTypes.FINITE_BSCAN,
+    AcqTypes.X_FREQUENCY,
     AcqTypes.FINITE_CSCAN,
 )
 
@@ -92,7 +93,7 @@ PinnedOutputFreeQueue = Queue()
         
 # Thread wrappers inject shared queues, memory, logging, and the UI bridge.
 
-from ThreadCamera_DH import Camera
+from ThreadCamera_AK import Camera
 class Camera_2(Camera):
     def __init__(self, ui, log):
         super().__init__()
@@ -220,16 +221,23 @@ class GUI(MainWindow):
         self.ui.redoBG.clicked.connect(self.redo_background)
         self.ui.redoSurf.clicked.connect(self.redo_surface)
         self.ui.BG_DIR.textChanged.connect(self.update_background)
-        self.ui.AlinesPerBline.valueChanged.connect(self.update_background)
-        self.ui.offsetH.valueChanged.connect(self.update_background)
+        self.ui.Xpixels.valueChanged.connect(self.update_background)
+        self.ui.XGalvoBias.valueChanged.connect(self.update_background)
         self.ui.NSamples_PF.valueChanged.connect(self.update_background)
         self.ui.NSamples_DH.valueChanged.connect(self.update_background)
+        if hasattr(self.ui, "NSamples_AK"):
+            self.ui.NSamples_AK.valueChanged.connect(self.update_background)
         self.ui.SpectralDS_DH.valueChanged.connect(self.update_background)
         self.ui.SpectralDS_DH.valueChanged.connect(self.update_Dispersion)
         self.ui.SpectralDS_PF.valueChanged.connect(self.update_background)
         self.ui.SpectralDS_PF.valueChanged.connect(self.update_Dispersion)
+        if hasattr(self.ui, "SpectralDS_AK"):
+            self.ui.SpectralDS_AK.valueChanged.connect(self.update_background)
+            self.ui.SpectralDS_AK.valueChanged.connect(self.update_Dispersion)
         self.ui.offsetW_PF.valueChanged.connect(self.update_background)
         self.ui.offsetW_DH.valueChanged.connect(self.update_background)
+        if hasattr(self.ui, "offsetW_AK"):
+            self.ui.offsetW_AK.valueChanged.connect(self.update_background)
         self.ui.Camera.currentTextChanged.connect(self.update_background)
         self.ui.Camera.currentTextChanged.connect(self.update_Dispersion)
         self.ui.InD_DIR.textChanged.connect(self.update_Dispersion)
@@ -273,6 +281,15 @@ class GUI(MainWindow):
         self._ui_bridge.bline_ready.connect(self._on_bline_ready)
         self._ui_bridge.cscan_ready.connect(self._on_cscan_ready)
         self._ui_bridge.aodo_waveform_ready.connect(self._on_aodo_waveform_ready)
+        # AiKe 页选了新的 .vlcf：空闲时立即让相机线程重新设置，采集时等下次扫描。
+        if hasattr(self, "ak_vlcf_changed"):
+            self.ak_vlcf_changed.connect(self._on_ak_vlcf_changed)
+        # 曝光/行频/增益改动：立即让相机线程重设这三个相机参数。
+        if hasattr(self, "ak_runtime_changed"):
+            self.ak_runtime_changed.connect(self._on_ak_runtime_changed)
+        # 标尺轴向尺度（水中/空气）切换：用缓存的最后一次 payload 重画显示。
+        if hasattr(self, "ruler_scale_changed"):
+            self.ruler_scale_changed.connect(self._on_ruler_scale_changed)
         if hasattr(self.ui, "SliceN"):
             self._on_slice_n_changed(self.ui.SliceN.value())
         self._last_display_payloads = {
@@ -322,6 +339,30 @@ class GUI(MainWindow):
 
     def _on_status_message(self, msg: str):
         self.ui.statusbar.showMessage(msg)
+
+    def _on_ruler_scale_changed(self):
+        """标尺轴向尺度切换：用缓存的最后一次 payload 重画，立刻看到新刻度。"""
+        self.Update_contrast()
+
+    def _on_ak_runtime_changed(self):
+        """用户改了曝光/行频/增益：让相机线程立即重设对应相机参数（采集时延后生效）。"""
+        try:
+            DQueue.put(DActionField("ApplyRuntimeParams"))
+        except Exception as error:
+            self._ui_bridge.status_message.emit("下发相机参数失败: %s" % error)
+
+    def _on_ak_vlcf_changed(self, vlcf_path: str):
+        """用户换了 .vlcf：空闲时立刻让相机线程重新配置，采集进行中则等下次扫描。"""
+        try:
+            if self.ui.RunButton.isChecked():
+                self._ui_bridge.status_message.emit(
+                    "已选择 VLCF: %s；当前正在采集，将在下次扫描开始时生效。" % vlcf_path
+                )
+                return
+            DQueue.put(DActionField("ConfigureBoard"))
+            self._ui_bridge.status_message.emit("已请求相机按 %s 重新设置。" % vlcf_path)
+        except Exception as error:
+            self._ui_bridge.status_message.emit("请求相机重设失败: %s" % error)
 
     def _on_slice_n_changed(self, value: int):
         if hasattr(self.ui, "CuSlice"):
@@ -522,6 +563,8 @@ class GUI(MainWindow):
         
     def run_task(self):
         acq_mode = self.ui.ACQMode.currentText()
+        if acq_mode == "ContinueBline":
+            acq_mode = AcqTypes.CONTINUOUS_BLINE
         if acq_mode in CONTINUOUS_ACQ_MODES + LIVE_ONLY_MODES:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
@@ -657,7 +700,7 @@ class GUI(MainWindow):
     def Update_contrast(self):
         acq_mode = self.ui.ACQMode.currentText()
 
-        if acq_mode in ["FiniteBline", "ContinuousBline", "ContinuousKX"]:
+        if acq_mode in ["FiniteBscan", "ContinuousBline", "Xfrequency"]:
             payload = self._last_display_payloads.get("bline")
             if payload is not None:
                 render_bline_ready(self.ui, payload)
@@ -673,14 +716,14 @@ class GUI(MainWindow):
     def redo_background(self):
         an_action = WeaverActionField(
             WeaverActions.GET_BACKGROUND,
-            acq_mode=AcqTypes.FINITE_BLINE,
+            acq_mode=AcqTypes.FINITE_BSCAN,
         )
         self.enqueue_weaver_action(an_action)
         
     def redo_surface(self):
         an_action = WeaverActionField(
             WeaverActions.GET_SURFACE,
-            acq_mode=AcqTypes.FINITE_BLINE,
+            acq_mode=AcqTypes.FINITE_BSCAN,
         )
         self.enqueue_weaver_action(an_action)
         

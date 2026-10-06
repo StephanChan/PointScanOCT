@@ -1,0 +1,706 @@
+PL4KCL-200KT 
+           
+
+               (V1.2 2023.02.27)
+
+                            
+                                     http://www.i-tek.cn/
+                                                   PL4KCL-200KT 
+
+                    2022/05/20                    
+                    2022/8/17
+               1.0                                  
+               1.1  2023/2/27           
+               1.2
+                                               
+                                              UI 
+
+                                2 / 38
+                  PL4KCL-200KT 
+
+
+
+
++86-551-65318597
++86-551-65318597
+www.i-tek.cn
+ J2  3F
+230088
+
+Hefei I-TEK Optoelectronics Co., Ltd.
+Tel: +86-551-65318597
+Fax: +86-551-65318597
+Website: www.i-tek.cn
+Address: 3F, Building #J2, Phase II, Zhong'an Chuanggu Technology Park, Wangjiang West
+ Road, High-tech Industry Development Zone,Hefei
+Zip code: 230088
+
+3 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                                     
+
+    ................................................................................................................................................ 2
+    ................................................................................................................................................ 3
+  ......................................................................................................................................................... 4
+1         .........................................................................................................................5
+
+      1.1  ........................................................................................................................ 5
+      1.2  ................................................................................................................ 5
+      1.3  ................................................................................................................ 8
+      1.4  Camera Link  .................................................................................................... 8
+      1.5  ............................................................................................................................ 9
+2       ................................................................................................................................ 10
+      2.1  .......................................................................................................................... 10
+      2.2  Tap  .......................................................................................................... 11
+      2.3  ...................................................................................................... 13
+      2.4  .............................................................................................................................. 14
+      2.5  .......................................................................................................................... 14
+      2.6  ...................................................................... 14
+      2.7  .................................................................................................................. 15
+      2.8  .......................................................................................................... 18
+      2.9  .......................................................................................................................... 19
+3             .................................................................................................... 24
+      3.1  ...................................................................................................................... 24
+      3.2  .......................................................................................................... 24
+      3.3  .......................................................................................................................... 25
+      3.4  .......................................................................................................................... 26
+      3.5  ...................................................................................................... 28
+      3.6  .......................................................................................................... 30
+4     ......................................................................................................................................... 32
+      4.1  .................................................................................................................................. 32
+      4.2 LUT  ................................................................................................................................. 35
+5     ......................................................................................................................................... 38
+      5.1  .......................................................................................................................... 38
+      5.2  .......................................................................................................................... 38
+
+                                                                     4 / 38
+                                                                                                 PL4KCL-200KT 
+
+1 
+1.1 
+
+(1)  PC  PC 
+(2) 
+(3)  PCIEx4PCIEx8  PCIEx16 
+
+                                                   1.1-1 PCIE 
+
+1.2 
+
+(1)  IKapLibrary.exe Win7/Win10 ,32bit/64bit,  4GB 
+ Win10  IKapLibrary.exe 1.2-1 
+
+
+                                               1.2-1 
+(2) 
+ C  1.2-2 
+
+                                                                     5 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                              1.2-2 
+(3)  1.2-3 
+
+                                                  1.2-3 
+(4)  1.2-4 """
+"""
+
+                                                1.2-4  1
+                                                                     6 / 38
+                                                                                                 PL4KCL-200KT 
+(5)  1.2-5 "Windows "
+""
+
+                                                1.2-5  2
+(6)  1.2-6 
+
+                                                 1.2-6 
+(7)  1.2-7 
+
+                                   1.2-7 
+                                                                     7 / 38
+                                                                                                 PL4KCL-200KT 
+
+1.3 
+
+       COM13 COM13
+ NULL
+IKComManager.exe C:\Program Files\I-TEK OptoElectronics\IKapLibrary\Bin
+ 1.3-1  1.3-2 
+
+                                        1.3-1 
+
+                                                 1.3-2 
+
+1.4  Camera Link 
+
+       Camera Link  CL1  CL2 
+       CL2  CL1
+
+                                         1.4-1  Vulcan-sCL PE4 FULL
+                                                                     8 / 38
+                            PL4KCL-200KT 
+
+       1.4-2  PL4KCL-200KT
+
+1.5 
+
+(1)  DC5V-24V1.0A
+(2) 
+(3) 
+
+(4) 
+
+                                              1.5-1 
+
+LED           
+
+              
+
+              
+
+              
+
+      
+
+              
+
+      9 / 38
+                                                                                                 PL4KCL-200KT 
+
+2 
+2.1 
+
+(1)  IKapCViewer
+(2)  C:\Program Files\I-TEK OptoElectronics\IKapLibrary\Bin
+
+                                  2.1-1  IKapCViewer
+(3) IKapCViewer  IKapCViewer->CameraLink-Board #0->PL4KCL-200KT 
+ CL1  CL1 
+
+
+                                        2.1-2  IKapCViewer 
+(4)  2.1-3 
+
+                                                 2.1-3 
+(5) "" 2.1-4 
+
+                                           2.1-4 
+                                                                    10 / 38
+                        PL4KCL-200KT 
+
+(6) IKapCViewer 
+
+                                         2.1-5 IKapCViewer 
+      
+
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+             
+
+2.2      Tap   
+
+(1)  AcquisitionControl  Synchronization Mode 
+InternalFreeRun 2.2-1  ImageFormatControl  PixelFormat  Mono8
+Sensor Taps  EightTap Geometry  Geometry_1x8 2.2-2 
+
+ 2.2-1 
+               11 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                                2.2-2 
+(2)  General  Working Mode  Free
+RunScan Type  LinearData Format  Image Type  8-bit  Monochrome
+2.2-3 Tap  8  1x8 2.2-4 
+
+                                       2.2-3 
+                                                                    12 / 38
+                     PL4KCL-200KT 
+
+       2.2-4  Tap 
+
+(3) 
+
+       2.2-1 PL4KCL-200KT 
+
+      PL4KCL-200KT 
+
+      4096
+
+      linear
+
+      Monochrome
+
+      8bit
+
+Tap 
+
+2.3 
+
+(1) Acquisition Line Rate HzExposure Time us
+ IKapCViewer  Acquisition Control 
+Line Period Time us 2.3-1  MaxLine Rate 
+ 200K
+
+                                              2.3-1 
+
+(2)  Itek us
+
+
+                                           us 106
+                                                               
+
+       5k  5000  1000000/5000=20
+0us
+<-3
+
+                                                                    13 / 38
+                                                                                                 PL4KCL-200KT 
+
+2.4 
+
+(1) 
+ IKapCViewer  AnalogControl  DigitalCo
+ntrol 
+(2)  PGA Gain x1/x2/x5/x10 1 /2 /5 /10 
+ 2.4-1 
+(3)  Digital Gain[0.01,8.00] 0.01
+
+(4)  Digital Offset 12bit [-4095,4095]=
++/16 2.4-2 
+
+                                                    2.4-1 
+
+                                               2.4-2 
+
+2.5 
+
+(1)  IKapCViewer  General  Image Height
+ 2.5-1 
+(2)  1024 Image Height  1024
+
+                                                    2.5-1 
+
+2.6 
+
+ IKapCViewer  General 
+                                                                    14 / 38
+                                                                                                 PL4KCL-200KT 
+ 2.6-1 
+(1) IKapCviewer  300000ms
+ 300s -1 
+(2) 
+
+ Line Timeout Factor 
+(3) =Line Timeout Factor * 
+ 10us 256Line Timeout Factor  2^32-1
+
+                                     2.6-1 
+
+2.7 
+
+PL4KCL-200KT 
+(1)  Image Format Control  2.7-1 
+LeftToRightRightToLeft
+ 2.7-22.7-3 
+
+                                                                    15 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                              2.7-1 
+
+                                                    2.7-2 
+
+                                            2.7-3 
+(2)  Image Format Control 
+Top To BottomBottom To Top
+ Camera Link  CC3  2.7-42.7-5 
+
+                                                                    16 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                        2.7-4 
+
+                                    2.7-5  CC3 
+ 2.7-62.7
+-7 
+
+                                                                    17 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                   2.7-6 
+
+                                  2.7-7 
+
+2.8 
+
+(1) IKapCViewer->->
+IKapCViewer->->
+
+                                                 2.8-1 
+                                                                    18 / 38
+                                                                                                 PL4KCL-200KT 
+(2) 
+ UserSetControl  
+FactoryUser1User2 2.8-2  User1  User2 
+ save  load  2.8-3 
+Factory 
+
+                                                    2.8-2 
+
+                                               2.8-3 
+
+2.9 
+
+(1) IKapCViewer IKapCViewer->->
+ 2.9-1 
+
+                                                 2.9-1 
+      ""
+(2) IKapCViewer *.bmpJPEG  *.jpg*.jpeg
+PNG *.pngTIFF *.tif*.tiff*.raw iim 
+*.iim
+(3)  8bit  2.9-2 
+
+                                                                    19 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                           2.9-2  8bit 
+(4)  8bit  8bit 
+ 10bit  8bit 
+"""8bit""" 2.
+9-3 
+
+                                                                    20 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                 2.9-3  8bit 
+      """16bit""Tiff"
+ 2.9-4 
+
+                                                                    21 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                            2.9-4 "16bit"
+(5)  IKapCViewer  2.9-5 
+
+      
+ 2.9-6 IKapCViewer  65535 
+
+
+                                              2.9-5 
+
+                                                                    22 / 38
+                                               PL4KCL-200KT 
+ 2.9-6 
+
+                  23 / 38
+                                                                                                 PL4KCL-200KT 
+
+3 
+3.1 
+
+(1) 
+
+(2) 
+
+
+3.2 
+(1) ItekVulcan  IKIO-F3-254-5000-II
+
+                      3.2-1  IKIO-F3-254-5000-II
+
+      3.2-1 IKIO-F3-254-5000-II  IO  DB15 
+
+  1                  2   3          4             5
+ 
+  6                                               
+ 
+ 11                  7   8          9             10
+
+                                                  
+
+                     12  13         14            15
+
+                                                  
+
+                   3.2-2  IO 
+
+     Description         Pin#HD15                 Color
+                                                  
+ShaftEncoder1_A+             4
+                                                   
+     ShaftEncoder1_A-        5                     
+                                                   
+ShaftEncoder1_B+             6                    
+
+     ShaftEncoder1_B-        8
+
+     GeneralInput1+          15
+
+                         24 / 38
+                           PL4KCL-200KT 
+
+GeneralInput1-         9   
+                            
+GeneralInput2+         12
+                           
+GeneralInput2-         11   
+                            
+GeneralOutput1_Signal  1
+                           
+GeneralOutput1_VCC     3    
+                            
+GeneralOutput1_GND     7    
+                            
+GeneralOutput2_Signal  2
+
+GeneralOutput2_VCC     13
+
+GeneralOutput2_GND     10
+
+N.C                    14
+
+(2) 
+
+ GeneralInput1+ 15GeneralInput1- 9
+
+ GeneralInput1+ 15 GeneralInput1- 9
+(3) 
+
+A  ShaftEncoder1_A+ 4ShaftEncoder1_A- 5
+B  ShaftEncoder1_B+ 6ShaftEncoder1_B- 8
+
+A  ShaftEncoder1_A+ 4 ShaftEncoder1_A- 5
+B  ShaftEncoder1_B+ 6 ShaftEncoder1_B- 8
+(4)  3.3V~24V 10mA  1mA 
+
+                                                3.2-2  IO 
+
+3.3 
+
+(1)  GeneralInput1+/GeneralInput1-
+(2)  AcquisitionControl  Synchronization Mode  InternalFreeRun
+
+                                                                    25 / 38
+                                                                                                 PL4KCL-200KT 
+(3)  General  Working Mode  Hardware TriggerTrigger Source 
+ General Input1
+
+                                                 3.3-1 
+
+                                               3.3-2 
+
+3.4 
+
+(1)  ShaftEncoder1_A+/ShaftEncoder1_A- ShaftEncoder1_B+/ShaftEncoder1_B-
+
+
+                                                                    26 / 38
+                                                                                                 PL4KCL-200KT 
+(2)  General  Working Mode  Free Run
+(3)  AcquisitionControl  Synchronization Mode  ExternalPulse
+External Trigger Source  CC1
+(4)  IO Control  CC1 Output  Integration Signal1
+Integration Method  Integration Trigger Source  Shaft Encoder1
+Integration Trigger Method  Method1
+
+                                          3.4-1 
+
+                                                3.4-2 
+
+                                                                    27 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                              3.4-3 CC1 
+
+                                        3.4-4 
+
+3.5 
+
+(1)  GeneralInput1+/GeneralInput1-
+(2)  ShaftEncoder1_A+/ShaftEncoder1_A-ShaftEncoder1_B+/ShaftEncoder1_B-
+
+(3)  AcquisitionControl  Synchronization Mode  ExternalPulse
+External Trigger Source  CC1
+(4)  General  Working Mode  Hardware TriggerTrigger Source 
+ General Input1
+(5)  IO Control  CC1 Output  Integration Signal1
+Integration Method  Integration Trigger Source  Shaft Encoder1Integration
+
+                                                                    28 / 38
+                                                                                                 PL4KCL-200KT 
+Trigger Method  Method1
+
+                                              3.5-1 
+
+                                            3.5-2 
+                                                                    29 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                              3.5-3 CC1 
+
+                                        3.5-4 
+
+3.6 
+
+(1) 
+=/
+=/*/
+
+A  B 
+(2) =
+(3)  IO Control  3.6-1 
+Multiply Factor Division Factor 
+(4)  Shaft Encoder Channel  4  A  B  4 
+
+                                                                    30 / 38
+                                                                                                 PL4KCL-200KT 
+ A  B 
+(5)  4  AB 
+(6)  4  AB 
+0-2^31-1 2000
+
+                                               3.6-1 
+
+                                                                    31 / 38
+                                                                                                 PL4KCL-200KT 
+
+4 
+4.1 
+
+      
+
+
+
+      PL4KCL-200KT 
+
+
+
+
+      
+
+
+      
+(1) 
+(2) 
+(3) 
+(4) 
+
+
+      
+(1) 
+(2) Low Pass Filter Width 
+ 0
+
+                                               4.1-1 
+(3) Flat Field Calibration Reference Enable 
+ 12bit  768 
+ 488bit
+
+                                                                    32 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                               4.1-2 
+(4)  ROI Flat Field Data Offset 
+ 0  0  1 Flat Field Data Width 
+ 4096  4096 
+ROI 4096
+
+                                             4.1-3  ROI 
+(5) "FFCControl""Flat Field Correction Enable"
+
+                                                    4.1-4 
+(6) 
+
+(7)  3 
+
+                                                                    33 / 38
+                                                                                                 PL4KCL-200KT 
+
+(8) 
+ 32~2408bit
+ 4 
+(9) "Init Flat Field Calibration" Set 4.1-5 
+
+                                               4.1-5 
+(10) "Exec Flat Field Calibration" Set
+ 4.1-6 
+
+                                                 4.1-6 
+(11) "Flat Field Correction Enable"
+
+                                                 4.1-7 
+                                                                    34 / 38
+                                                                                                 PL4KCL-200KT 
+
+4.2 LUT 
+
+      LUT 
+
+
+      LUT 
+(1)  IKapCViewer->-> 4.2-1 
+
+                                                  4.2-1 
+(2)  LUT "" 4.2-2 
+
+                                                  4.2-2 
+(3) "" LUT X Y 
+ LUT  12bit  4.2-3 
+
+                                                                    35 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                            4.2-3  LUT 
+(4) "" LUT  4.2-4 
+
+                                                4.2-4  LUT 
+(5) "" LUT  4.2-5 
+
+                                                                    36 / 38
+                                                                                                 PL4KCL-200KT 
+
+                                            4.2-5  LUT 
+(6) "" LUT  4.2-6 
+
+                                                    4.2-6  LUT
+                                                                    37 / 38
+                                                                                                 PL4KCL-200KT 
+
+5 
+5.1 
+
+(1)  Camera Link  CL1  CL2 
+(2) 
+(3) 
+
+5.2 
+
+(1)  1
+0  328bit 2408bit
+ 4
+(2)  1 
+ 2 
+(3) 
+
+
+                                                                    38 / 38
+

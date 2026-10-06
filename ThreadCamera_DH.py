@@ -21,6 +21,7 @@ from CameraUi import (
     effective_camera_sample_count,
     raw_camera_sample_count,
     spectral_downsample,
+    x_pixel_count,
 )
 import matplotlib.pyplot as plt
 global SIM
@@ -61,11 +62,11 @@ CONTINUOUS = 0x7FFFFFFF
 DAHENG_PRINT_CAMERA_CONFIG = False
 DAHENG_SPECTRAL_DIMENSION = "horizontal"
 # Set DAHENG_SPECTRAL_DIMENSION to:
-#   "vertical"   -> camera Height = NSamples_DH, camera Width = AlinesPerBline
-#   "horizontal" -> camera Width = NSamples_DH, camera Height = AlinesPerBline
+#   "vertical"   -> camera Height = NSamples_DH, camera Width = 1
+#   "horizontal" -> camera Width = NSamples_DH, camera Height = 1
 # Packed conversion and transpose-write are the long pole for long dynamic scans.
 # Increase this cautiously: block completion is still emitted in frame order below.
-DAHENG_CONSUMER_WORKERS = 4
+DAHENG_CONSUMER_WORKERS = 6
 DAHENG_BUFFER_TIMEOUT_MS = 200
 DAHENG_MAX_CONSECUTIVE_TIMEOUTS = 20
 
@@ -261,16 +262,20 @@ class Camera(QThread):
                     print(ex)
     
     def ConfigureBoard(self):
-        self.AlinesPerBline = self.ui.AlinesPerBline.value()
+        self.AlinesPerBline = x_pixel_count(self.ui)
         self.NSamples_DH = raw_camera_sample_count(self.ui)
         self.SpectralDS = spectral_downsample(self.ui)
         self.ProcessedSamples = effective_camera_sample_count(self.ui)
-        if self.ui.ACQMode.currentText() in ['FiniteBline']:
-            self.BlinesPerAcq = self.ui.BlineAVG.value() 
-        elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousKX', 'ContinuousCscan']:
+        if self.ui.ACQMode.currentText() in ['FiniteBscan']:
+            self.BlinesPerAcq = x_pixel_count(self.ui) * self.ui.BlineAVG.value()
+        elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
         elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
-            self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
+            self.BlinesPerAcq = (
+                self.ui.Ypixels.value()
+                * x_pixel_count(self.ui)
+                * self.ui.BlineAVG.value()
+            )
             
         if self.hcam is not None:
             self.SetExposure()
@@ -283,13 +288,13 @@ class Camera(QThread):
 
             if daheng_spectral_is_horizontal():
                 camera_width = self.NSamples_DH
-                camera_height = self.AlinesPerBline
+                camera_height = 1
                 offset_x = self.ui.offsetW_DH.value()
-                offset_y = self.ui.offsetH.value()
+                offset_y = 0
             else:
-                camera_width = self.AlinesPerBline
+                camera_width = 1
                 camera_height = self.NSamples_DH
-                offset_x = self.ui.offsetH.value()
+                offset_x = 0
                 offset_y = self.ui.offsetW_DH.value()
 
             self.hcam_fr.get_int_feature("Width").set(camera_width)
@@ -309,12 +314,12 @@ class Camera(QThread):
             print("  ROI raw camera Width/NSamples_DH: %d" % int(self.NSamples_DH))
             print("  ROI raw camera Height/AlinesPerBline: %d" % int(self.AlinesPerBline))
             print("  OffsetX/offsetW_DH: %d" % int(self.ui.offsetW_DH.value()))
-            print("  OffsetY/offsetH: %d" % int(self.ui.offsetH.value()))
+            print("  OffsetY fixed for line camera: 0")
         else:
             print("  ROI raw camera Height/NSamples_DH: %d" % int(self.NSamples_DH))
             print("  ROI raw camera Width/AlinesPerBline: %d" % int(self.AlinesPerBline))
             print("  OffsetY/offsetW_DH: %d" % int(self.ui.offsetW_DH.value()))
-            print("  OffsetX/offsetH: %d" % int(self.ui.offsetH.value()))
+            print("  OffsetX fixed for line camera: 0")
         print("  SpectralDS: %d" % int(self.SpectralDS))
         print("  Processed samples in memory: %d" % int(self.ProcessedSamples))
         print("  PixelFormat_DH: %s" % self.ui.PixelFormat_DH.currentText())
@@ -486,9 +491,9 @@ class Camera(QThread):
                             print("camera time out...")
                             increment_profile("timeouts")
                             if daheng_spectral_is_horizontal():
-                                fallback_shape = [self.AlinesPerBline, self.ProcessedSamples]
+                                fallback_shape = [1, self.ProcessedSamples]
                             else:
-                                fallback_shape = [self.ProcessedSamples, self.AlinesPerBline]
+                                fallback_shape = [self.ProcessedSamples, 1]
                             Bline = np.zeros(fallback_shape, dtype=self.Memory[memory_slot].dtype)
                         else:
                             if use_packed:
@@ -498,9 +503,9 @@ class Camera(QThread):
                                 add_profile("packed_convert", time.perf_counter() - t_convert)
                                 t_view = time.perf_counter()
                                 if daheng_spectral_is_horizontal():
-                                    raw_shape = (self.AlinesPerBline, self.NSamples_DH)
+                                    raw_shape = (1, self.NSamples_DH)
                                 else:
-                                    raw_shape = (self.NSamples_DH, self.AlinesPerBline)
+                                    raw_shape = (self.NSamples_DH, 1)
                                 Bline = np.frombuffer(
                                     mono_image_array, dtype=np.uint16).reshape(raw_shape)
                                 add_profile("numpy_view", time.perf_counter() - t_view)
@@ -628,6 +633,9 @@ class Camera(QThread):
 
     def write_bline_to_memory(self, bline, memory_slot, frame_index):
         dest = self.Memory[memory_slot][frame_index]
+        bline = np.asarray(bline)
+        if bline.ndim == 1:
+            bline = bline.reshape(1, -1)
         if bline.shape == dest.shape:
             write_mode = "direct"
             dest[...] = bline
@@ -727,9 +735,9 @@ class Camera(QThread):
             # t0=time.time()
             
             if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
-                Bline = np.uint8(np.zeros([self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui)]))
+                Bline = np.uint8(np.zeros([1, effective_camera_sample_count(self.ui)]))
             else:
-                Bline = np.uint16(np.zeros([self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui)]))
+                Bline = np.uint16(np.zeros([1, effective_camera_sample_count(self.ui)]))
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
             self.Memory[current_slot][BlinesCount % NBlines] = Bline

@@ -1,1 +1,1 @@
-pyuic5 -x D:\ASOCT\GUI.ui -o D:\ASOCT\GUI.py
+pyuic5 -x D:\ASOCT\ASOCTspotscan\GUI.ui -o D:\ASOCT\ASOCTspotscan\GUI.py

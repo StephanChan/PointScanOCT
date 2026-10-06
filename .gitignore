@@ -1,0 +1,8 @@
+# generated / scratch files kept out of the repository
+__pycache__/
+*.pyc
+_seg_compare/
+*.log
+*.npy
+_tmp_*.py
+*.bak*

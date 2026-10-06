@@ -1,0 +1,38 @@
+camera[0]: name=PL4KCL-200KT , serial=737DZ066 , class=CameraLink
+Using CameraLink camera index=0, board_index=0.
+No .vlcf file provided; using current/default board configuration.
+Warning: Set camera enum ExposureAuto=Off failed: 0x91000e
+Camera float ExposureTime=10
+Warning: Set camera int Width=1600 failed.
+Warning: Set camera int Height=1024 failed.
+Camera int OffsetX=0
+Warning: Set camera int OffsetY=0 failed.
+Camera enum PixelFormat=Mono12
+Camera float AcquisitionLineRate=10000
+Camera enum SynchronizationMode=ExternalPulse
+Warning: Set camera enum TriggerSelector=FrameStart failed: 0x91000e
+Warning: Set camera enum TriggerMode=Off failed: 0x91000e
+Warning: Set camera enum TriggerSelector=LineStart failed: 0x91000e
+Warning: Set camera enum TriggerMode=On failed: 0x91000e
+Warning: Set camera enum TriggerSource=Line1 failed: 0x91000d
+Camera enum TriggerActivation=RisingEdge
+Line trigger configured.
+IKap image: width=4096, height=1, depth=8, channels=1, frame_size=4096
+IKap grab started.IKap event: grab start
+
+ART-DAQ trigger output: line=Galvo/port0/line0, trigger_rate=10000 Hz, sample_rate=20000 Hz, samples=20000, duration=1.000 s
+ART-DAQ trigger samples written: 20000
+Grab summary: frames=0, lost=0, timeouts=0
+No frame was captured.
+IKap grab stopped.
+[4;33mReloaded modules[24m: IKapBoard, IKapCDef, IKapC, artdaq.error_codes, artdaq.errors, artdaq._lib, artdaq.utils, artdaq.constants, artdaq._task_modules.channels.channel, artdaq._task_modules.channels.ai_channel, artdaq._task_modules.channels.ao_channel, artdaq._task_modules.channels.cio_channel, artdaq._task_modules.channels.dio_channel, artdaq._task_modules.channels, artdaq._task_modules.export_signals, artdaq._task_modules.in_stream, artdaq.types, artdaq._task_modules.read_functions, artdaq._task_modules.timing, artdaq._task_modules.triggering, artdaq._task_modules.triggering.pause_trigger, artdaq._task_modules.triggering.reference_trigger, artdaq._task_modules.triggering.start_trigger, artdaq._task_modules.triggers, artdaq._task_modules.write_functions, artdaq._task_modules.out_stream, artdaq._task_modules.channel_collection, artdaq._task_modules.ai_channel_collection, artdaq._task_modules.ao_channel_collection, artdaq._task_modules.cio_channel_collection, artdaq._task_modules.di_channel_collection, artdaq._task_modules.do_channel_collection, artdaq._task_modules.calibration, artdaq.system.device, artdaq.task, artdaq, artdaq.stream_writers[0m
+No Device
+[4;33mReloaded modules[24m: gxipy.gxwrapper, gxipy.dxwrapper, gxipy.gxidef, gxipy.Exception, gxipy.StatusProcessor, gxipy.Buffer, gxipy.Feature_s, gxipy.FeatureControl, gxipy.ImageProc, gxipy.Feature, gxipy.ImageProcessConfig, gxipy.Interface, gxipy.DataStream, gxipy.Device, gxipy.FlatFieldCorrection, gxipy.ImageFormatConvert, gxipy.ImageProcess, gxipy.Decompressor, gxipy.DeviceManager, gxipy.gxiapi, gxipy[0m
+IKap PCIe board count: 1
+  board[0]: Vulcan-CL Frame Grabber_0
+IKap camera count: 1
+  camera[0]: name=PL4KCL-200KT , serial=737DZ066 , class=CameraLink
+Opened CameraLink camera[0] successfully.
+[4;33mReloaded modules[24m: IKapBoard, IKapCDef, IKapC[0m
+No Device
+[4;33mReloaded modules[24m: gxipy.gxwrapper, gxipy.dxwrapper, gxipy.gxidef, gxipy.Exception, gxipy.StatusProcessor, gxipy.Buffer, gxipy.Feature_s, gxipy.FeatureControl, gxipy.ImageProc, gxipy.Feature, gxipy.ImageProcessConfig, gxipy.Interface, gxipy.DataStream, gxipy.Device, gxipy.FlatFieldCorrection, gxipy.ImageFormatConvert, gxipy.ImageProcess, gxipy.Decompressor, gxipy.DeviceManager, gxipy.gxiapi, gxipy[0m

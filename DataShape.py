@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from ActionTypes import AcqTypes
-from CameraUi import effective_camera_sample_count
+from CameraUi import effective_camera_sample_count, x_pixel_count
 
 
 CSCAN_MODES = (
@@ -28,7 +28,7 @@ def depth_pixels(ui, data=None, raw=False):
 
 
 def x_pixels(ui):
-    return int(ui.AlinesPerBline.value())
+    return x_pixel_count(ui)
 
 
 def repeat_count(ui, data=None, raw=False, acq_mode=None, gpu_avg_count=1):
@@ -39,23 +39,26 @@ def repeat_count(ui, data=None, raw=False, acq_mode=None, gpu_avg_count=1):
         return max(1, configured_bline_avg // max(1, int(gpu_avg_count)))
 
     frame_count = int(data.shape[0])
+    x_count = max(1, x_pixels(ui))
+    if acq_mode in (AcqTypes.FINITE_BSCAN, AcqTypes.CONTINUOUS_BLINE, AcqTypes.X_FREQUENCY):
+        return max(1, frame_count // x_count)
     if not raw:
         return frame_count
 
     if acq_mode in CSCAN_MODES:
-        if frame_count > configured_bline_avg and frame_count % configured_bline_avg == 0:
+        frames_per_y = max(1, x_count * configured_bline_avg)
+        if frame_count >= frames_per_y:
             return configured_bline_avg
     return frame_count
 
 
 def cscan_y_count(ui, data, raw=False):
     frame_count = int(data.shape[0])
-    if not raw:
-        return frame_count
-
+    x_count = max(1, x_pixels(ui))
     configured_bline_avg = max(1, int(ui.BlineAVG.value()))
-    if frame_count > configured_bline_avg and frame_count % configured_bline_avg == 0:
-        return frame_count // configured_bline_avg
+    frames_per_y = max(1, x_count * configured_bline_avg)
+    if frame_count >= frames_per_y:
+        return frame_count // frames_per_y
     return frame_count
 
 

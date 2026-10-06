@@ -7,8 +7,13 @@ EXIT_ACTION = "exit"
 class AcqTypes:
     CONTINUOUS_ALINE = "ContinuousAline"
     FINITE_ALINE = "FiniteAline"
+    FINITE_BSCAN = "FiniteBscan"
     CONTINUOUS_BLINE = "ContinuousBline"
     CONTINUOUS_KX = "ContinuousKX"
+    # Diagnostic mode: one B-line acquisition, displayed as the log-scale intensity
+    # spectrum obtained by FFT along the X (galvo) direction.
+    X_FREQUENCY = "Xfrequency"
+
     FINITE_BLINE = "FiniteBline"
     CONTINUOUS_CSCAN = "ContinuousCscan"
     FINITE_CSCAN = "FiniteCscan"

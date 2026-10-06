@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """USB camera helpers for ASOCT live view."""
 
-import cv2
+try:
+    import cv2
+except Exception:
+    cv2 = None
 
 
 USB_PIXEL_SIZE_MM = 0.045
@@ -21,10 +24,14 @@ def stage_to_usb_image(stage_x, stage_y, image_width):
 
 
 def orient_usb_frame(frame):
+    if cv2 is None:
+        raise RuntimeError("OpenCV (cv2) is required for USB camera frame orientation.")
     return cv2.flip(frame, 1)
 
 
 def open_usb_camera(configure_exposure=False):
+    if cv2 is None:
+        raise RuntimeError("OpenCV (cv2) is required for USB camera live view.")
     cap = cv2.VideoCapture(USB_CAMERA_INDEX, cv2.CAP_MSMF)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, USB_FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, USB_FRAME_HEIGHT)

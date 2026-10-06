@@ -13,32 +13,32 @@ import time
 import traceback
 from queue import Empty
 from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION, GPUActions
-from CameraUi import effective_camera_sample_count
-from HardwareSpecs import get_camera_spec
+from CameraUi import effective_camera_sample_count, x_pixel_count
 
 # GPU performance -------------------------------------------------------------
 GPU_RELEASE_MEMORY_EACH_FFT = False
 GPU_FFT_CHUNK_FRAMES = 32
 GPU_OVERLAP_TRANSFER = True
 
-# Off-axis holography X-sideband filtering -----------------------------------
-HOLO_X_FILTER_ENABLED = True
-HOLO_REFERENCE_TILT_DEG = 1.3
-HOLO_CENTER_WAVELENGTH_NM = 840.0
-HOLO_WAVELENGTH_RANGE_NM = 40.0
-HOLO_SIDEBAND_SIGN = +1
-HOLO_SIDEBAND_HALF_WIDTH_FRACTION = 0.65
-HOLO_SIDEBAND_TAPER_FRACTION = 0.30
-HOLO_X_FILTER_CENTER_FRACTION_OVERRIDE = None
-HOLO_REFERENCE_CARRIER_DEMODULATION = True
-HOLO_CONJUGATE_POSITIVE_SIDEBAND = True
-HOLO_KEEP_HIGH_FREQUENCY_TAIL = False
-HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD = False
-HOLO_PRINT_FILTER_INFO = True
-HOLO_X_CONTIGUOUS_FFT = True
+# Notch (band-stop) filters ----------------------------------------------------
+# X notch: sharp, DC-centred band-stop along the X GALVO axis - the fast/horizontal
+# axis inside a B-line image (X = galvo scan direction). This is NOT the
+# spectral/depth axis. It is applied per spectral channel while the data is still
+# in the spectral domain: after interpolation and before the depth FFT. The
+# suppressed half-width is a fraction of the X Nyquist frequency and is adjustable
+# from the UI (XNotchFilter / XNotchBandwidth). Disabled by default.
+NOTCH_X_FILTER_DEFAULT = False
+NOTCH_X_CENTER_BAND_HALF_WIDTH_FRACTION = 0.25
+NOTCH_X_PRINT_FILTER_INFO = True
 
-# Depth display ---------------------------------------------------------------
-DEPTH_CENTER_ZERO_DEPTH_IN_DISPLAY = True
+# Xfrequency diagnostic display -------------------------------------------------
+# What the Xfrequency acquisition mode renders after its X-direction transform:
+#   "ifft"     - the B-line picture reconstructed after blanking the notch band in
+#                the X-frequency domain (normal B-scan look, so the notch effect is
+#                visible directly). With the notch off it is a plain FFT/IFFT round
+#                trip, i.e. the untouched (BlineAVG-averaged) B-line image.
+#   "spectrum" - the raw log-scale X-frequency spectrum (fx on screen).
+X_FREQUENCY_DISPLAY = "ifft"
 
 # ContinuousKX display --------------------------------------------------------
 CONTINUOUS_KX_DISPLAY_SCALE = "linear"
@@ -74,25 +74,17 @@ class GPUThread(QThread):
         self.dispersion_gpu = None
         self.release_gpu_memory_each_fft = GPU_RELEASE_MEMORY_EACH_FFT
         self.gpu_chunk_frames = GPU_FFT_CHUNK_FRAMES
+        # X notch state (see NOTCH_X_* above).
+        self.notch_x_enabled = NOTCH_X_FILTER_DEFAULT
+        self.notch_x_half_width_fraction = NOTCH_X_CENTER_BAND_HALF_WIDTH_FRACTION
+        self._notch_x_weights_cache = {}
+        self._notch_x_weights_gpu_cache = {}
+        self._notch_x_info_printed = False
         self.gpu_overlap_transfer = GPU_OVERLAP_TRANSFER
-        self.holo_x_filter_enabled = HOLO_X_FILTER_ENABLED
-        self.holo_reference_tilt_deg = HOLO_REFERENCE_TILT_DEG
-        self.holo_center_wavelength_nm = HOLO_CENTER_WAVELENGTH_NM
-        self.holo_wavelength_range_nm = HOLO_WAVELENGTH_RANGE_NM
-        self.holo_sideband_sign = HOLO_SIDEBAND_SIGN
-        self.holo_sideband_half_width_fraction = HOLO_SIDEBAND_HALF_WIDTH_FRACTION
-        self.holo_sideband_taper_fraction = HOLO_SIDEBAND_TAPER_FRACTION
-        self.holo_x_filter_center_fraction_override = HOLO_X_FILTER_CENTER_FRACTION_OVERRIDE
-        self.holo_reference_carrier_demodulation = HOLO_REFERENCE_CARRIER_DEMODULATION
-        self.holo_conjugate_positive_sideband = HOLO_CONJUGATE_POSITIVE_SIDEBAND
-        self.holo_keep_high_frequency_tail = HOLO_KEEP_HIGH_FREQUENCY_TAIL
-        self.holo_subtract_common_mode_after_demod = HOLO_SUBTRACT_COMMON_MODE_AFTER_DEMOD
-        self.holo_print_filter_info = HOLO_PRINT_FILTER_INFO
-        self.holo_x_contiguous_fft = HOLO_X_CONTIGUOUS_FFT
-        self.depth_center_zero_depth_in_display = DEPTH_CENTER_ZERO_DEPTH_IN_DISPLAY
-        self.holo_filter_info_printed = False
         self.kx_display_scale = CONTINUOUS_KX_DISPLAY_SCALE
         self.kx_normalize_per_frame = CONTINUOUS_KX_NORMALIZE_PER_FRAME
+        # Mode of the package currently being processed (set per item).
+        self.current_acq_mode = None
         self.gpu_profile_timing_enabled = GPU_PROFILE_TIMING_ENABLED
         self.gpu_profile_timing_print_chunks = GPU_PROFILE_TIMING_PRINT_CHUNKS
         self.background_x_normalization_eps = NORMALIZATION_EPS
@@ -104,8 +96,6 @@ class GPUThread(QThread):
         self.float_gpu_buffer = None
         self.float_gpu_stream_buffers = [None, None]
         self.gpu_streams = None
-        self.holo_filter_cache = {}
-        self.holo_carrier_cache = {}
         self.pinned_output_pool_size = PINNED_OUTPUT_POOL_SIZE
         self.pinned_output_buffers = {}
         self.next_pinned_output_token = 0
@@ -219,14 +209,27 @@ class GPUThread(QThread):
 
 
     def current_kx_display_enabled(self):
-        item_mode = getattr(getattr(self, "item", None), "acq_mode", None)
-        return item_mode == AcqTypes.CONTINUOUS_KX or self.ui.FFTresults.currentText() == "KX"
+        return False
 
 
-    def current_fft_output_range(self, samples, pixel_range):
+    @staticmethod
+    def fft_depth_limit(samples):
+        return max(1, int(samples))
+
+
+    def depth_crop_bounds(self, total_samples, pixel_start, pixel_range):
+        limit = self.fft_depth_limit(total_samples)
+        start = min(max(0, int(pixel_start)), limit - 1)
+        end = min(start + max(1, int(pixel_range)), limit)
+        end = max(start + 1, end)
+        return start, end
+
+
+    def current_fft_output_range(self, samples, pixel_start, pixel_range):
         if self.current_kx_display_enabled():
             return int(samples)
-        return pixel_range
+        start, end = self.depth_crop_bounds(samples, pixel_start, pixel_range)
+        return end - start
 
 
 
@@ -236,6 +239,259 @@ class GPUThread(QThread):
         if target == "linear":
             return 65025
         return 255
+
+    # -- Xfrequency diagnostic display ------------------------------------- #
+
+    def current_x_frequency_mode(self):
+        return getattr(self, "current_acq_mode", None) == AcqTypes.X_FREQUENCY
+
+    def x_frequency_display(self, data_cpu):
+        """Xfrequency: transform the B-line along X (the galvo axis) and show the result.
+
+        The processed B-line image (A-lines x depth) is first averaged down to one row
+        per X position, then transformed along X. The buffer layout is preserved -
+        (frames, 1, depth) - so the normal B-line display path renders it.
+
+        X_FREQUENCY_DISPLAY selects what is shown:
+          "ifft"     - the picture reconstructed after blanking the X notch band in the
+                       fx domain (default). Notch off -> plain FFT/IFFT round trip, i.e.
+                       the untouched B-line; XNotchBandwidth = 0 -> only the fx = 0
+                       column (the DC/streak component) is removed.
+          "spectrum" - the log-scale fx spectrum itself (fx axis on screen, 0 = centre),
+                       with the notch band blanked black.
+        Content that is constant along X (horizontal stripes) lives at fx = 0.
+        """
+        arr = np.asarray(data_cpu)
+        if arr.ndim != 3 or arr.shape[1] != 1:
+            self.emit_status("Xfrequency: unexpected data shape %s" % (arr.shape,))
+            return data_cpu
+        x_pixels = max(1, int(x_pixel_count(self.ui)))
+        series = arr[:, 0, :].astype(np.float32, copy=False)
+        rows = (int(series.shape[0]) // x_pixels) * x_pixels
+        if rows < x_pixels:
+            self.emit_status(
+                "Xfrequency: %d A-line(s) is fewer than %d X pixel(s); reduce X pixels "
+                "or BlineAVG." % (int(series.shape[0]), x_pixels)
+            )
+            return data_cpu
+        depth = int(series.shape[1])
+        image = series[:rows].reshape(rows // x_pixels, x_pixels, depth).mean(axis=0)
+        spectrum = np.fft.fftshift(np.fft.fft(image, axis=0), axes=0)
+        magnitude = np.abs(spectrum)
+        raw_peak = float(magnitude.max()) if magnitude.size else 0.0
+        log_peak = float(np.log10(raw_peak + np.float32(1.0))) if raw_peak > 0.0 else 0.0
+        notch_band = self.x_frequency_notch_band(x_pixels)
+        if notch_band is not None:
+            # Blank exactly the fx band the X notch suppresses in the acquisition
+            # pipeline (XNotchBandwidth = 0 -> the single fx = 0 column only).
+            spectrum[notch_band[0]:notch_band[1] + 1, :] = 0.0
+            magnitude[notch_band[0]:notch_band[1] + 1, :] = 0.0
+        self.announce_x_frequency_notch_band(x_pixels, notch_band)
+        if X_FREQUENCY_DISPLAY == "spectrum":
+            # fx spectrum, normalised by the unfiltered peak so switching the notch
+            # on/off only blacks out that band and leaves every other pixel unchanged.
+            frame = np.log10(magnitude + np.float32(1.0))
+            if log_peak > 0.0:
+                frame *= np.float32(255.0 / log_peak)
+        else:
+            # Inverse transform back onto the X (galvo) axis: the B-line picture left
+            # behind by the same notch band. Linear magnitude in the regular B-scan
+            # units, so the XZmin/XZmax contrast applies as usual (with the notch off
+            # this is a plain FFT/IFFT round trip of the B-line image).
+            frame = np.abs(np.fft.ifft(np.fft.ifftshift(spectrum, axes=0), axis=0))
+            frame = frame.astype(np.float32, copy=False)
+        result = frame.reshape(frame.shape[0], 1, frame.shape[1])
+        depth_out = min(int(result.shape[2]), int(arr.shape[2]))
+        out = np.zeros_like(arr)
+        # Process_bline averages each X-sized block back into one B-line, so the
+        # transformed frame is tiled over every complete block: without this the
+        # average would come out divided by the repeat (BlineAVG) count.
+        blocks = int(out.shape[0]) // max(1, int(result.shape[0]))
+        for block in range(max(1, blocks)):
+            start = block * int(result.shape[0])
+            stop = start + int(result.shape[0])
+            if stop > int(out.shape[0]):
+                break
+            out[start:stop, 0, :depth_out] = result[:, 0, :depth_out]
+        return out.astype(arr.dtype, copy=False)
+
+    def x_frequency_notch_band(self, x_pixels):
+        """Display-order bin range (inclusive) that the X notch suppresses.
+
+        Uses the very same notch_x_weights() mask as the acquisition pipeline, so the
+        blank band drawn on the Xfrequency picture matches the suppressed band 1:1.
+        Returns None when the notch is off or removes nothing.
+        """
+        x_pixels = int(x_pixels)
+        if x_pixels < 2 or not self.current_x_notch_enabled():
+            return None
+        weights = np.asarray(self.notch_x_weights(x_pixels), dtype=np.float32).reshape(-1)
+        if int(weights.size) != x_pixels:
+            return None
+        removed = np.nonzero(np.fft.fftshift(weights) <= np.float32(0.5))[0]
+        if removed.size == 0:
+            return None
+        return int(removed[0]), int(removed[-1])
+
+    def announce_x_frequency_notch_band(self, x_pixels, band):
+        """Report the notch band once per parameter change (keeps the status bar sane)."""
+        if band is None:
+            return
+        x_pixels = max(1, int(x_pixels))
+        low, high = int(band[0]), int(band[1])
+        fraction = float(self.current_x_notch_half_width_fraction())
+        key = (x_pixels, low, high, fraction)
+        if key == getattr(self, "_x_frequency_band_key", None):
+            return
+        self._x_frequency_band_key = key
+        half = x_pixels / 2.0
+        message = (
+            "Xfrequency: X notch blanks fx %.3f..%.3f x Nyquist (display bins %d..%d of %d, "
+            "%.1f%% of the X band), XNotchBandwidth=%.3f."
+            % (
+                (low - half) / half,
+                (high - half) / half,
+                low,
+                high,
+                x_pixels,
+                100.0 * (high - low + 1) / x_pixels,
+                fraction,
+            )
+        )
+        print(message)
+        self.emit_status(message)
+
+    # -- X notch (band-stop) filter ---------------------------------------- #
+
+    def current_x_notch_enabled(self):
+        widget = getattr(self.ui, "XNotchFilter", None)
+        if widget is not None and hasattr(widget, "isChecked"):
+            try:
+                return bool(widget.isChecked())
+            except Exception:
+                pass
+        return bool(self.notch_x_enabled)
+
+    def current_x_notch_half_width_fraction(self):
+        widget = getattr(self.ui, "XNotchBandwidth", None)
+        if widget is not None and hasattr(widget, "value"):
+            try:
+                value = float(widget.value())
+                if np.isfinite(value):
+                    return max(0.0, min(value, 1.0))
+            except Exception:
+                pass
+        return float(self.notch_x_half_width_fraction)
+
+    def notch_x_weights(self, x_pixels):
+        """Sharp DC-centred band-stop along the X galvo axis: 0 inside |fx| <= cutoff,
+        1 outside.
+
+        The transform axis is the X galvo direction inside a B-line (x_pixels =
+        A-lines per B-line), not the spectral/depth axis. np.fft.fftfreq is
+        cycles/sample in [-0.5, 0.5), so Nyquist is 0.5 and the cutoff is expressed
+        directly as a fraction of it (no pixel size needed).
+        Native FFT order: no fftshift/ifftshift around the filter.
+        """
+        x_pixels = int(x_pixels)
+        fraction = float(self.current_x_notch_half_width_fraction())
+        cache_key = (x_pixels, fraction)
+        cached = self._notch_x_weights_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        freq_axis = np.fft.fftfreq(x_pixels).astype(np.float32)
+        cutoff = np.float32(fraction * 0.5)
+        weights = (np.abs(freq_axis) > cutoff).astype(np.float32)
+        self._notch_x_weights_cache = {cache_key: weights}
+        if NOTCH_X_PRINT_FILTER_INFO and not self._notch_x_info_printed:
+            self._notch_x_info_printed = True
+            print(
+                "X notch (band-stop along the X galvo axis): enabled=%s, "
+                "half-width=%.3f x X Nyquist, x_pixels=%d"
+                % (self.current_x_notch_enabled(), fraction, x_pixels)
+            )
+        return weights
+
+    def notch_x_weights_gpu(self, x_pixels):
+        x_pixels = int(x_pixels)
+        fraction = float(self.current_x_notch_half_width_fraction())
+        cached = self._notch_x_weights_gpu_cache.get(x_pixels)
+        if cached is not None and cached[0] == fraction:
+            return cached[1]
+        weights_gpu = cupy.asarray(self.notch_x_weights(x_pixels))
+        self._notch_x_weights_gpu_cache = {x_pixels: (fraction, weights_gpu)}
+        return weights_gpu
+
+    def notch_x_pixels(self, alines, frames=None):
+        """Transform length of the X notch FFT: the UI X pixel count.
+
+        `alines` is the flattened A-line count along the acquisition axis. X (the galvo
+        axis) is laid out innermost, so that count must be a whole multiple of the X
+        pixel count for every group of X A-lines to be one valid B-line.
+
+        `frames` is accepted for call-site compatibility and ignored: deriving the
+        length by dividing the A-line count by a frame count returned 1 (and the
+        filter was then silently skipped) whenever the A-line count itself was passed
+        in as the frame count.
+        """
+        alines = int(alines)
+        x_pixels = max(1, int(x_pixel_count(self.ui)))
+        if alines <= 0 or x_pixels < 2:
+            return None
+        if alines % x_pixels:
+            self.warn_x_notch_unaligned(alines, x_pixels)
+            return None
+        return x_pixels
+
+    def notify_x_notch_applied(self, alines, x_pixels):
+        """Log the first X notch application for a given geometry (never silent)."""
+        x_pixels = max(1, int(x_pixels))
+        groups = max(1, int(alines) // x_pixels)
+        fraction = float(self.current_x_notch_half_width_fraction())
+        key = (int(alines), x_pixels, fraction)
+        if key == getattr(self, "_x_notch_applied_key", None):
+            return
+        self._x_notch_applied_key = key
+        message = (
+            "X notch: filtering %d B-line group(s) of %d A-lines along X "
+            "(half width %.3f x X Nyquist)." % (groups, x_pixels, fraction)
+        )
+        print(message)
+        self.emit_status(message)
+
+    def warn_x_notch_unaligned(self, alines, x_pixels):
+        """Report an applied X notch that cannot be formed (never silent)."""
+        x_pixels = max(1, int(x_pixels))
+        key = (int(alines) % x_pixels, x_pixels)
+        if key == getattr(self, "_x_notch_unaligned_key", None):
+            return
+        self._x_notch_unaligned_key = key
+        message = (
+            "X notch skipped: %d A-line(s) is not a multiple of %d X pixel(s)."
+            % (int(alines), x_pixels)
+        )
+        print(message)
+        self.emit_status(message)
+
+    def apply_x_notch_gpu(self, k_domain_gpu, frames, x_pixels, samples):
+        """Filter one chunk along X, in the spectral domain (native FFT order)."""
+        self.notify_x_notch_applied(int(frames) * int(x_pixels), x_pixels)
+        field_gpu = k_domain_gpu.reshape(int(frames), int(x_pixels), int(samples))
+        weights_gpu = self.notch_x_weights_gpu(x_pixels)
+        spectrum_gpu = cupy.fft.fft(field_gpu, axis=1)
+        spectrum_gpu *= weights_gpu[cupy.newaxis, :, cupy.newaxis]
+        filtered_gpu = cupy.fft.ifft(spectrum_gpu, axis=1)
+        return filtered_gpu.reshape(int(frames) * int(x_pixels), int(samples))
+
+    def apply_x_notch_cpu(self, k_domain_cpu, frames, x_pixels, samples):
+        """CPU counterpart of apply_x_notch_gpu (used by the CPU FFT path)."""
+        self.notify_x_notch_applied(int(frames) * int(x_pixels), x_pixels)
+        field_cpu = k_domain_cpu.reshape(int(frames), int(x_pixels), int(samples))
+        weights = self.notch_x_weights(x_pixels)
+        spectrum_cpu = np.fft.fft(field_cpu, axis=1)
+        spectrum_cpu *= weights[np.newaxis, :, np.newaxis]
+        filtered_cpu = np.fft.ifft(spectrum_cpu, axis=1)
+        return filtered_cpu.reshape(int(frames) * int(x_pixels), int(samples))
 
     def scale_kx_display_cpu(self, kx_data):
         target = getattr(self, "kx_display_scale", "linear")
@@ -285,40 +541,13 @@ class GPUThread(QThread):
             scale = target_max / (cupy.max(magnitude, axis=(1, 2), keepdims=True) + 1e-12)
             return (magnitude * scale).astype(cupy.float32)
 
-    def current_depth_centered_enabled(self):
-        if self.current_kx_display_enabled():
-            return False
-        return bool(self.depth_center_zero_depth_in_display)
-
-    def depth_crop_start(self, total_samples, pixel_start, pixel_range):
-        if self.current_depth_centered_enabled():
-            center = total_samples // 2
-            half = pixel_range // 2
-            return min(max(0, center - half), max(0, total_samples - pixel_range))
-        return min(max(0, int(pixel_start)), max(0, int(total_samples) - int(pixel_range)))
-
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
         samples = int(fft_data.shape[-1])
-        start = self.depth_crop_start(samples, pixel_start, pixel_range)
-        end = min(start + pixel_range, samples)
-        if self.current_depth_centered_enabled():
-            # Select the requested window in fftshift order without rearranging
-            # the complete depth FFT. fftshift is a roll by samples//2.
-            shifted_indices = xp.arange(start, end, dtype=xp.int64)
-            native_indices = (shifted_indices - samples // 2) % samples
-            return xp.take(fft_data, native_indices, axis=-1)
+        start, end = self.depth_crop_bounds(samples, pixel_start, pixel_range)
         return fft_data[..., start:end]
 
     def current_gpu_avg_count(self, frame_count=None):
-        if self.current_kx_display_enabled():
-            return 1
-        configured = self.current_bline_avg()
-        if frame_count is None:
-            return configured
-        frame_count = max(0, int(frame_count))
-        if configured <= 1 or frame_count < configured:
-            return 1
-        return configured
+        return 1
 
     @staticmethod
     def averaged_frame_count(frame_count, avg_count):
@@ -442,7 +671,6 @@ class GPUThread(QThread):
             "saved_background_subtraction",
             "reshape_alines",
             "interpolation",
-            "off_axis_x_filter",
             "fft",
             "select_depth_result",
             "abs_magnitude",
@@ -510,6 +738,7 @@ class GPUThread(QThread):
 
 
     def cudaFFT(self, DnS_action, acq_mode, memory_slot, context):
+        self.current_acq_mode = acq_mode
         timing = {"_wall_start": time.perf_counter()}
         package_profile = dict(getattr(self.item, "profile", {}) or {})
         package_profile["gpu_start_s"] = timing["_wall_start"]
@@ -519,7 +748,7 @@ class GPUThread(QThread):
         samples = self.current_nsamples()
         Pixel_start = self.current_depth_start()
         Pixel_range = self.current_depth_range()
-        output_range = self.current_fft_output_range(samples, Pixel_range)
+        output_range = self.current_fft_output_range(samples, Pixel_start, Pixel_range)
         slot_shape = self.Memory[memory_slot].shape
         valid_input_frames = self.valid_input_frame_count(memory_slot)
         gpu_avg_count = self.current_gpu_avg_count(valid_input_frames)
@@ -537,8 +766,9 @@ class GPUThread(QThread):
         self.gpu_timing_end(timing, "prepare_request", request_start)
 
         pinned_start = time.perf_counter()
+        slot_x_count = int(slot_shape[1]) if len(slot_shape) >= 3 else 1
         self.data_CPU, output_buffer_token, allocation_seconds = self.acquire_pinned_output_buffer(
-            (output_frames, slot_shape[1], output_range), np.float32
+            (output_frames, slot_x_count, output_range), np.float32
         )
         pinned_elapsed = time.perf_counter() - pinned_start
         timing["pinned_buffer_allocate"] = timing.get("pinned_buffer_allocate", 0.0) + allocation_seconds
@@ -566,6 +796,8 @@ class GPUThread(QThread):
         for key, value in timing.items():
             if not key.startswith("_") and isinstance(value, (int, float)):
                 package_profile["gpu_{}_s".format(key)] = float(value)
+        if self.current_x_frequency_mode():
+            self.data_CPU = self.x_frequency_display(self.data_CPU)
         an_action = DnSActionField(
             DnS_action,
             acq_mode=acq_mode,
@@ -600,15 +832,19 @@ class GPUThread(QThread):
         )
 
     def fft_cpu(self, DnS_action, acq_mode, memory_slot, context):
+        self.current_acq_mode = acq_mode
         cpu_start_s = time.perf_counter()
         package_profile = dict(getattr(self.item, "profile", {}) or {})
         samples = self.current_nsamples()
         pixel_start = self.current_depth_start()
         pixel_range = self.current_depth_range()
+        output_range = self.current_fft_output_range(samples, pixel_start, pixel_range)
         valid_input_frames = self.valid_input_frame_count(memory_slot)
         gpu_avg_count = self.current_gpu_avg_count(valid_input_frames)
         effective_frames = self.averaged_frame_count(valid_input_frames, gpu_avg_count) * gpu_avg_count
         self.data_CPU = self.Memory[memory_slot][:effective_frames].astype(np.float32, copy=True)
+        if self.data_CPU.ndim == 2:
+            self.data_CPU = self.data_CPU[:, np.newaxis, :]
         processed_shape = self.data_CPU.shape
         background_reference_cpu = self.determine_background_cpu(memory_slot)
         self.apply_saved_background_subtraction_cpu(self.data_CPU, background_reference_cpu)
@@ -616,6 +852,17 @@ class GPUThread(QThread):
         self.data_CPU = self.data_CPU.reshape([alines, samples])
         if self.interp:
             self.data_CPU = self.interpolate_cpu(self.data_CPU)
+        if (
+            self.current_x_notch_enabled()
+            and not self.current_kx_display_enabled()
+            and not self.current_x_frequency_mode()
+        ):
+            alines = int(self.data_CPU.shape[0])
+            x_pixels = self.notch_x_pixels(alines)
+            if x_pixels:
+                self.data_CPU = self.apply_x_notch_cpu(
+                    self.data_CPU, alines // x_pixels, x_pixels, samples
+                )
         if self.current_kx_display_enabled():
             self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], samples)
             self.data_CPU = np.fft.fftshift(np.fft.fft(self.data_CPU, axis=1), axes=1)
@@ -627,7 +874,7 @@ class GPUThread(QThread):
                 self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
             self.data_CPU = self.select_fft_depth_result(self.data_CPU, pixel_start, pixel_range, np)
             self.data_CPU = np.abs(self.data_CPU, dtype=np.float32)
-            self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], pixel_range)
+            self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], output_range)
         if not self.current_kx_display_enabled():
             self.data_CPU *= np.float32(self.AMPLIFICATION)
             self.apply_background_x_normalization_cpu(self.data_CPU)
@@ -636,8 +883,10 @@ class GPUThread(QThread):
                     effective_frames // gpu_avg_count,
                     gpu_avg_count,
                     processed_shape[1],
-                    pixel_range,
+                    output_range,
                 ).mean(axis=1, dtype=np.float32)
+        if self.current_x_frequency_mode():
+            self.data_CPU = self.x_frequency_display(self.data_CPU)
         an_action = DnSActionField(
             DnS_action,
             acq_mode=acq_mode,
@@ -664,6 +913,18 @@ class GPUThread(QThread):
         total_frames = max(1, int(total_frames))
         avg_count = max(1, int(avg_count))
         requested = max(avg_count, int(self.gpu_chunk_frames))
+        if (
+            self.current_x_notch_enabled()
+            and not self.current_kx_display_enabled()
+            and not self.current_x_frequency_mode()
+        ):
+            # The X notch transforms every group of X pixels inside a chunk, so a chunk
+            # has to carry whole B-lines: round the chunk up to a multiple of the X
+            # pixel count (and of the averaging count, which is applied per chunk too).
+            x_pixels = max(1, int(x_pixel_count(self.ui)))
+            if x_pixels >= 2:
+                step = x_pixels * avg_count
+                requested = max(requested, ((requested + step - 1) // step) * step)
         aligned = max(avg_count, (requested // avg_count) * avg_count)
         return min(total_frames, aligned)
 
@@ -759,7 +1020,9 @@ class GPUThread(QThread):
                 slot_refs[slot] = None
 
             input_end = min(input_start + chunk_frames, total_input_frames)
-            chunk = self.Memory[memory_slot][input_start:input_end, :, :]
+            chunk = self.Memory[memory_slot][input_start:input_end]
+            if chunk.ndim == 2:
+                chunk = chunk[:, np.newaxis, :]
             output_count = self.averaged_frame_count(input_end - input_start, gpu_avg_count)
             output_end = output_start + output_count
             host_out = self.data_CPU[output_start:output_end, :, :]
@@ -823,153 +1086,6 @@ class GPUThread(QThread):
             "stream": stream,
             "keep_alive": keep_alive,
         }
-
-    def current_holo_x_filter_enabled(self):
-        return bool(self.holo_x_filter_enabled)
-
-
-    def current_camera_pixel_size_m(self):
-        camera = get_camera_spec(self.ui.Camera.currentText())
-        if camera is None:
-            return 9.0e-6
-        return float(camera.pixel_size_um) * 1e-6
-
-
-
-
-
-    def holo_center_wavelength_m(self):
-        return float(self.holo_center_wavelength_nm) * 1e-9
-
-
-    def holo_wavelength_range_m(self):
-        return float(self.holo_wavelength_range_nm) * 1e-9
-
-
-    def holo_reference_tilt_rad(self):
-        return float(self.holo_reference_tilt_deg) * np.pi / 180.0
-
-
-    def holo_wavenumber_axis_gpu(self, samples):
-        center = self.holo_center_wavelength_m()
-        span = self.holo_wavelength_range_m()
-        lambda_start = center - span / 2.0
-        lambda_end = center + span / 2.0
-        k_start = 2.0 * np.pi / lambda_end
-        k_end = 2.0 * np.pi / lambda_start
-        return cupy.linspace(k_start, k_end, int(samples), dtype=cupy.float32)
-
-    def holo_filter_weights_gpu(self, x_pixels):
-        x_pixels = int(x_pixels)
-        pixel_size_m = self.current_camera_pixel_size_m()
-        cache_key = (
-            x_pixels, pixel_size_m, float(self.holo_reference_tilt_deg),
-            float(self.holo_center_wavelength_nm), int(self.holo_sideband_sign),
-            float(self.holo_sideband_half_width_fraction),
-            float(self.holo_sideband_taper_fraction),
-            self.holo_x_filter_center_fraction_override,
-            bool(self.holo_keep_high_frequency_tail),
-        )
-        cached = self.holo_filter_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        # Native FFT order eliminates fftshift/ifftshift around the X filter.
-        kx_axis = cupy.fft.fftfreq(x_pixels, d=pixel_size_m).astype(cupy.float32)
-        kx_axis *= cupy.float32(2.0 * np.pi)
-        kx_nyquist = np.pi / pixel_size_m
-        sign = 1.0 if int(self.holo_sideband_sign) >= 0 else -1.0
-        override = self.holo_x_filter_center_fraction_override
-        if override is None:
-            center_abs = 2.0 * np.pi * abs(np.sin(self.holo_reference_tilt_rad())) / self.holo_center_wavelength_m()
-            center = sign * center_abs
-        else:
-            center = float(override) * kx_nyquist
-            center_abs = abs(center)
-        half_width = max(center_abs * float(self.holo_sideband_half_width_fraction), kx_nyquist / max(x_pixels, 1))
-        taper = np.clip(float(self.holo_sideband_taper_fraction), 0.0, 0.95) * half_width
-        weights = cupy.zeros((x_pixels,), dtype=cupy.float32)
-        if self.holo_keep_high_frequency_tail:
-            signed_kx = cupy.float32(sign) * kx_axis
-            lower_edge = center_abs - half_width
-            if taper > 0:
-                flat = signed_kx >= lower_edge + taper
-                roll = (signed_kx > lower_edge) & (signed_kx < lower_edge + taper)
-                weights[flat] = cupy.float32(1.0)
-                weights[roll] = cupy.float32(0.5) * (
-                    cupy.float32(1.0) - cupy.cos(cupy.float32(np.pi) * (signed_kx[roll] - lower_edge) / taper)
-                )
-            else:
-                weights[signed_kx > lower_edge] = cupy.float32(1.0)
-        else:
-            dist = cupy.abs(kx_axis - cupy.float32(center))
-            if taper > 0:
-                flat = dist <= (half_width - taper)
-                roll = (dist > (half_width - taper)) & (dist < half_width)
-                weights[flat] = cupy.float32(1.0)
-                weights[roll] = cupy.float32(0.5) * (
-                    cupy.float32(1.0) + cupy.cos(cupy.float32(np.pi) * (dist[roll] - (half_width - taper)) / taper)
-                )
-            else:
-                weights[dist < half_width] = cupy.float32(1.0)
-        if self.holo_print_filter_info and not self.holo_filter_info_printed:
-            self.holo_filter_info_printed = True
-            print(
-                "Off-axis X filter: "
-                f"enabled={self.holo_x_filter_enabled}, sign={int(sign)}, "
-                f"center/Nyquist={center / kx_nyquist:.3f}, "
-                f"half_width/Nyquist={half_width / kx_nyquist:.3f}, "
-                f"taper_fraction={float(self.holo_sideband_taper_fraction):.2f}, "
-                f"pixel={pixel_size_m * 1e6:.2f} um"
-            )
-        self.holo_filter_cache = {cache_key: weights}
-        return weights
-
-    def holo_carrier_gpu(self, x_pixels, samples):
-        pixel_size_m = self.current_camera_pixel_size_m()
-        cache_key = (
-            int(x_pixels), int(samples), pixel_size_m,
-            float(self.holo_reference_tilt_deg),
-            float(self.holo_center_wavelength_nm),
-            float(self.holo_wavelength_range_nm), int(self.holo_sideband_sign),
-        )
-        cached = self.holo_carrier_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        x_axis = cupy.arange(int(x_pixels), dtype=cupy.float32)
-        x_axis -= cupy.float32((int(x_pixels) - 1) / 2.0)
-        x_axis *= cupy.float32(pixel_size_m)
-        k_axis = self.holo_wavenumber_axis_gpu(samples)
-        sign = 1.0 if int(self.holo_sideband_sign) >= 0 else -1.0
-        carrier = cupy.exp(
-            -1j
-            * cupy.float32(sign * np.sin(self.holo_reference_tilt_rad()))
-            * k_axis[cupy.newaxis, :]
-            * x_axis[:, cupy.newaxis]
-        ).astype(cupy.complex64, copy=False)
-        self.holo_carrier_cache = {cache_key: carrier}
-        return carrier
-
-    def apply_holo_x_filter_gpu(self, spectral_gpu, frames, x_pixels, samples):
-        field_gpu = spectral_gpu.reshape(int(frames), int(x_pixels), int(samples)).astype(cupy.complex64, copy=False)
-        weights_gpu = self.holo_filter_weights_gpu(x_pixels)
-        if self.holo_x_contiguous_fft:
-            # cuFFT is substantially happier when X is the contiguous axis.
-            field_x_last = cupy.ascontiguousarray(field_gpu.transpose(0, 2, 1))
-            filtered_kx_gpu = cupy.fft.fft(field_x_last, axis=-1)
-            filtered_kx_gpu *= weights_gpu[cupy.newaxis, cupy.newaxis, :]
-            field_gpu = cupy.fft.ifft(filtered_kx_gpu, axis=-1).transpose(0, 2, 1)
-        else:
-            filtered_kx_gpu = cupy.fft.fft(field_gpu, axis=1)
-            filtered_kx_gpu *= weights_gpu[cupy.newaxis, :, cupy.newaxis]
-            field_gpu = cupy.fft.ifft(filtered_kx_gpu, axis=1)
-        if self.holo_reference_carrier_demodulation:
-            carrier = self.holo_carrier_gpu(x_pixels, samples)
-            field_gpu *= carrier[cupy.newaxis, :, :]
-            if self.holo_conjugate_positive_sideband:
-                field_gpu = cupy.conj(field_gpu)
-        if self.holo_subtract_common_mode_after_demod:
-            field_gpu = field_gpu - cupy.median(field_gpu, axis=1, keepdims=True)
-        return field_gpu.reshape(int(frames) * int(x_pixels), int(samples))
 
     def gpu_interpolation_buffer(self, shape, slot=None):
         if slot is None:
@@ -1042,11 +1158,18 @@ class GPUThread(QThread):
         self.gpu_timing_end(timing, "interpolation", step_start, stream)
         keep_alive.append(yp_gpu)
 
-        if self.current_holo_x_filter_enabled() and not self.current_kx_display_enabled():
-            step_start = self.gpu_timing_start(stream)
-            yp_gpu = self.apply_holo_x_filter_gpu(yp_gpu, output_frames, chunk_shape[1], samples)
-            self.gpu_timing_end(timing, "off_axis_x_filter", step_start, stream)
-            keep_alive.append(yp_gpu)
+        if (
+            self.current_x_notch_enabled()
+            and not self.current_kx_display_enabled()
+            and not self.current_x_frequency_mode()
+        ):
+            alines = int(yp_gpu.shape[0])
+            x_pixels = self.notch_x_pixels(alines)
+            if x_pixels:
+                step_start = self.gpu_timing_start(stream)
+                yp_gpu = self.apply_x_notch_gpu(yp_gpu, alines // x_pixels, x_pixels, samples)
+                self.gpu_timing_end(timing, "x_notch", step_start, stream)
+                keep_alive.append(yp_gpu)
 
         if self.current_kx_display_enabled():
             step_start = self.gpu_timing_start(stream)
@@ -1076,7 +1199,7 @@ class GPUThread(QThread):
             self.gpu_timing_end(timing, "abs_magnitude", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
-        output_range = self.current_fft_output_range(samples, Pixel_range)
+        output_range = self.current_fft_output_range(samples, Pixel_start, Pixel_range)
         data_gpu = data_gpu.reshape(output_frames, chunk_shape[1], output_range)
         self.gpu_timing_end(timing, "reshape_depth", step_start, stream)
 
@@ -1147,7 +1270,15 @@ class GPUThread(QThread):
 
     def determine_background_gpu(self, memory_slot):
         shape = self.Memory[memory_slot].shape
-        if self.bg_sub and self.background.shape == shape[1:]:
+        expected_shape = shape[1:] if len(shape) >= 3 else (shape[-1],)
+        background = self.background
+        if self.bg_sub and background.shape == expected_shape:
+            pass
+        elif self.bg_sub and len(shape) == 2 and background.shape == (1, shape[-1]):
+            pass
+        else:
+            return None
+        if self.bg_sub:
             if self.background_gpu is None or self.background_gpu.shape != self.background.shape:
                 self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
             return self.background_gpu
@@ -1160,8 +1291,11 @@ class GPUThread(QThread):
 
     def determine_background_cpu(self, memory_slot):
         shape = self.Memory[memory_slot].shape
-        if self.bg_sub and self.background.shape == shape[1:]:
-            return np.asarray(self.background[np.newaxis, :, :], dtype=np.float32)
+        expected_shape = shape[1:] if len(shape) >= 3 else (shape[-1],)
+        if self.bg_sub and self.background.shape == expected_shape:
+            return np.asarray(self.background, dtype=np.float32)
+        if self.bg_sub and len(shape) == 2 and self.background.shape == (1, shape[-1]):
+            return np.asarray(self.background, dtype=np.float32)
         return None
 
     def ensure_dispersion_gpu_cache(self):
@@ -1309,11 +1443,29 @@ class GPUThread(QThread):
 
     def update_background(self):
         samples = self.current_nsamples()
-        Xpixels = self.ui.AlinesPerBline.value()
+        Xpixels = x_pixel_count(self.ui)
+        background_shape = (1, int(samples))
         background_path = self.ui.BG_DIR.text()
         if os.path.isfile(background_path):
             try:
-                self.background = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([Xpixels, samples])
+                raw_background = np.fromfile(background_path, dtype=np.float32)
+                if raw_background.size == int(samples):
+                    background = raw_background.reshape(background_shape)
+                    message_suffix = "line-scan spectral background"
+                elif raw_background.size == int(Xpixels) * int(samples):
+                    background = raw_background.reshape([int(Xpixels), int(samples)]).mean(
+                        axis=0,
+                        keepdims=True,
+                        dtype=np.float32,
+                    )
+                    message_suffix = (
+                        "legacy X-by-spectral background averaged to line-scan background"
+                    )
+                else:
+                    raise ValueError(
+                        f"values={raw_background.size}, expected={int(samples)}"
+                    )
+                self.background = np.asarray(background, dtype=np.float32)
                 self.update_background_x_normalization()
                 self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
                 if self.background_x_normalization is not None:
@@ -1321,22 +1473,21 @@ class GPUThread(QThread):
                         self.background_x_normalization,
                         dtype=cupy.float32,
                     )
-                message = "Background file loaded."
+                message = f"Background file loaded as {message_suffix}."
                 self.emit_status(message)
                 print(message)
                 self.bg_sub = True
             except (OSError, ValueError) as error:
                 self.bg_sub = False
-                self.background = np.zeros([Xpixels, samples])
+                self.background = np.zeros(background_shape, dtype=np.float32)
                 self.background_gpu = None
                 self.background_x_normalization = None
                 self.background_x_normalization_gpu = None
-                message = f"Background file could not be loaded. Using zero background. {error}"
-                self.emit_status(message)
+                message = f"Background mismatch; using zero background ({error})."
                 print(message)
             except Exception as error:
                 self.bg_sub = False
-                self.background = np.zeros([Xpixels, samples])
+                self.background = np.zeros(background_shape, dtype=np.float32)
                 self.background_gpu = None
                 self.background_x_normalization = None
                 self.background_x_normalization_gpu = None
@@ -1345,13 +1496,11 @@ class GPUThread(QThread):
                 print(message)
         else:
             self.bg_sub = False
-            self.background = np.zeros([Xpixels, samples])
+            self.background = np.zeros(background_shape, dtype=np.float32)
             self.background_gpu = None
             self.background_x_normalization = None
             self.background_x_normalization_gpu = None
-            message = "No background file selected. Using zero background."
-            self.emit_status(message)
-            print(message)
+            print("No background selected; using zero background.")
 
     def update_background_x_normalization(self):
         if self.background is None or self.background.size == 0:
@@ -1387,8 +1536,6 @@ class GPUThread(QThread):
         self.raw_gpu_stream_buffers = [None, None]
         self.float_gpu_stream_buffers = [None, None]
         self.gpu_streams = None
-        self.holo_filter_cache = {}
-        self.holo_carrier_cache = {}
 
 
 
