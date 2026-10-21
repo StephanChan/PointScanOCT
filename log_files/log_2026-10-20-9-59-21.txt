@@ -1,0 +1,5 @@
+initializing AiKe IKap camera...
+Interpolation/dispersion folder not found: E:\PointScanOCT\dispersion\OKsystemStage position updated.
+
+No background selected; using zero background.
+AiKe camera init failed, using camera simulation. Error: No IKap camera found.

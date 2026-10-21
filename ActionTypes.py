@@ -35,6 +35,8 @@ class GPUActions:
     UPDATE_BACKGROUND = "update_background"
     DISPLAY_FFT_ACTIONS = "display_FFT_actions"
     DISPLAY_COUNTS = "display_counts"
+    # 整卷 Y 向陷波：DnS 把整卷交给 GPU 线程，结果从 VolumeResultQueue 取回
+    Y_NOTCH_VOLUME = "y_notch_volume"
 
 
 class DnSActions:

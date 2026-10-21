@@ -13,9 +13,12 @@ import os
 from pathlib import Path
 from scipy import ndimage
 import tifffile as TIFF
-from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION
+from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION, GPUActions
+from ActionFields import GPUActionField
+from queue import Empty
 from HardwareSpecs import TIFF_APPEND_WRITES_DEFAULT, TIFF_BIGTIFF_DEFAULT
 from DataShape import data_shape
+from CameraUi import x_pixel_count
 
 ALINE_MODES = ()
 
@@ -197,6 +200,14 @@ class DnSThread(QThread):
     def current_bline_avg(self):
         return max(1, int(self.ui.BlineAVG.value()))
 
+    def spectral_avg_used(self):
+        """GPU 已在光谱域做掉的 (AlineAVG, BlineAVG) 倍数；1 表示由本线程自己折叠。"""
+        item = getattr(self, "item", None)
+        return (
+            max(1, int(getattr(item, "spectral_aline_avg", 1) or 1)),
+            max(1, int(getattr(item, "spectral_bline_avg", 1) or 1)),
+        )
+
     # -- Y notch (band-stop) filter ---------------------------------------- #
 
     def current_y_notch_enabled(self):
@@ -322,6 +333,31 @@ class DnSThread(QThread):
             return False
         return self.current_y_notch_enabled()
 
+    def request_gpu_thread_y_notch(self, volume):
+        """把整卷 Y 陷波提交给 GPU 线程并等结果；不可用时返回 None 以便本地回退。"""
+        job_queue = getattr(self, "GPUQueue", None)
+        result_queue = getattr(self, "VolumeResultQueue", None)
+        if job_queue is None or result_queue is None:
+            return None
+        job = GPUActionField(GPUActions.Y_NOTCH_VOLUME)
+        job.volume = volume
+        job.half_width_fraction = self.current_y_notch_half_width_fraction()
+        try:
+            job_queue.put(job)
+            result = result_queue.get(timeout=600)
+        except Empty:
+            self.emit_status("GPU Y notch timed out; using the fallback implementation.")
+            return None
+        except Exception as error:
+            self.emit_status(f"GPU Y notch could not be queued: {error}")
+            return None
+        if result.get("error"):
+            self.emit_status(
+                "GPU Y notch failed (%s); using the fallback implementation." % result["error"]
+            )
+            return None
+        return result.get("volume")
+
     def filter_cscan_y_notch(self):
         """Apply the Y notch to the rebuilt volume; returns (applied, backend, filled).
 
@@ -338,14 +374,20 @@ class DnSThread(QThread):
             return False, None, filled
         z_pixels = int(self.XYVolume.shape[2])
         source = np.ascontiguousarray(self.XYVolume[:filled])
-        filtered = self.apply_y_notch_gpu(source)
-        backend = "GPU"
+        # 整卷陷波交给 GPU 线程做（按 Z 分块，不额外复制整卷到显存）；
+        # 队列未接线或 GPU 失败时依次回退到本线程的 cupy / numpy 实现。
+        filtered = self.request_gpu_thread_y_notch(source)
+        backend = "GPU thread"
+        if filtered is None:
+            filtered = self.apply_y_notch_gpu(source)
+            backend = "GPU"
         if filtered is None:
             filtered = self.apply_y_notch(source)
             backend = "CPU"
         self.XYVolume[:filled] = filtered
         z_idx = self.current_z_depth_index(z_pixels)
-        self.AIP[:filled, :] = filtered[:, :, z_idx]
+        z_plane = filtered[:, :, z_idx]
+        self.AIP[:filled, :] = np.abs(z_plane) if z_plane.dtype.kind == "c" else z_plane
         self._emit_display(kind="cscan")
         return True, backend, filled
 
@@ -393,7 +435,8 @@ class DnSThread(QThread):
         if frame_count <= 0:
             return
         for ii in range(frame_count):
-            self.write_tiff_frame(filename, stack[ii], append_if_exists=True)
+            # 复数卷按 幅度+相位 交错写出（save_data 对实数原样返回）
+            self.write_tiff_frame(filename, self.save_data(stack[ii]), append_if_exists=True)
         resolved = str(Path(filename).resolve())
         self._tiff_written_frames[resolved] = self.tiff_written_frames(filename) + frame_count
 
@@ -542,7 +585,16 @@ class DnSThread(QThread):
 
     def Process_bline(self, data, raw=False, acq_mode=None, gpu_avg_count=1):
         display_data = self.display_data(data)
-        shape = data_shape(self.ui, display_data, raw, acq_mode, gpu_avg_count)
+        spectral_aline_avg, spectral_bline_avg = self.spectral_avg_used()
+        shape = data_shape(
+            self.ui,
+            display_data,
+            raw,
+            acq_mode,
+            gpu_avg_count,
+            spectral_aline_avg,
+            spectral_bline_avg,
+        )
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         series = display_data
@@ -557,7 +609,7 @@ class DnSThread(QThread):
             )
         repeat_count = max(1, complete_frames // Xpixels)
         Bline = series[:complete_frames].reshape(repeat_count, Xpixels, Zpixels).mean(axis=0)
-        aline_avg = self.current_aline_avg()
+        aline_avg = 1 if spectral_aline_avg > 1 else self.current_aline_avg()
         if aline_avg > 1:
             Bline = Bline.reshape([Xpixels // aline_avg, aline_avg, Zpixels])
             Bline = np.mean(Bline, 1)
@@ -569,14 +621,27 @@ class DnSThread(QThread):
 
     def Process_Cscan(self, data, raw=False, acq_mode=None, gpu_avg_count=1):
         display_data = self.display_data(data)
-        shape = data_shape(self.ui, display_data, raw, acq_mode, gpu_avg_count)
+        spectral_aline_avg, spectral_bline_avg = self.spectral_avg_used()
+        shape = data_shape(
+            self.ui,
+            display_data,
+            raw,
+            acq_mode,
+            gpu_avg_count,
+            spectral_aline_avg,
+            spectral_bline_avg,
+        )
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         package_total_frames = getattr(self.item, "package_total_frames", None)
         package_start = int(getattr(self.item, "package_start", 0) or 0)
 
-        bline_avg = self.current_bline_avg()
-        series = display_data
+        # package_start / package_total_frames 用的是原始 A-line 行数，而 data 已经
+        # 是光谱域平均后的行数，换算 Y 行数时两者必须各用自己的“每 Y 行行数”。
+        raw_frames_per_y = max(1, x_pixel_count(self.ui) * self.current_bline_avg())
+        bline_avg = max(1, self.current_bline_avg() // spectral_bline_avg)
+        # 复数（AMP+PHASE）时用原始复数据建体积/存盘，display_data 只用于显示
+        series = data if (isinstance(data, np.ndarray) and data.dtype.kind == "c") else display_data
         if getattr(series, "ndim", 0) == 3 and int(series.shape[1]) == 1:
             series = series[:, 0, :]
         if getattr(series, "ndim", 0) != 2:
@@ -591,13 +656,13 @@ class DnSThread(QThread):
             )
         Cscan = series[:complete_frames].reshape(package_y_pixels, bline_avg, Xpixels, Zpixels)
         Cscan = np.mean(Cscan, 1)
-        y_start = package_start // frames_per_y
+        y_start = package_start // raw_frames_per_y
 
         Ypixels = package_y_pixels
         if package_total_frames is not None:
-            Ypixels = max(package_y_pixels, int(package_total_frames) // frames_per_y)
+            Ypixels = max(package_y_pixels, int(package_total_frames) // raw_frames_per_y)
 
-        aline_avg = self.current_aline_avg()
+        aline_avg = 1 if spectral_aline_avg > 1 else self.current_aline_avg()
         if aline_avg > 1:
             Cscan = Cscan.reshape([package_y_pixels, Xpixels // aline_avg, aline_avg, Zpixels])
             Cscan = np.mean(Cscan, 2)
@@ -611,7 +676,8 @@ class DnSThread(QThread):
             or y_start == 0
         )
         if needs_new_volume:
-            self.XYVolume = np.zeros((Ypixels, Xpixels, Zpixels), dtype=np.float32)
+            volume_dtype = np.complex64 if series.dtype.kind == "c" else np.float32
+            self.XYVolume = np.zeros((Ypixels, Xpixels, Zpixels), dtype=volume_dtype)
             self.AIP = np.zeros((Ypixels, Xpixels), dtype=np.float32)
             self.reset_cscan_output_for_new_volume(y_start)
 
@@ -619,7 +685,9 @@ class DnSThread(QThread):
         valid_count = max(0, y_end - y_start)
         if valid_count > 0:
             self.XYVolume[y_start:y_end, :, :] = Cscan[:valid_count]
-            self.AIP[y_start:y_end, :] = Cscan[:valid_count, :, z_idx]
+            z_plane = Cscan[:valid_count, :, z_idx]
+            # AIP 只用于显示，复数数据取幅度
+            self.AIP[y_start:y_end, :] = np.abs(z_plane) if z_plane.dtype.kind == "c" else z_plane
             bline_index = y_end - 1
             self.latest_cscan_bline_index = bline_index
             self.Bline = np.transpose(self.XYVolume[bline_index, :, :]).copy()
@@ -639,7 +707,16 @@ class DnSThread(QThread):
             # Diagnostic mode: the X-frequency spectrum is displayed live and never
             # written to disk (no filename bundle is built for it either).
             return
-        shape = data_shape(self.ui, data, raw, acq_mode, gpu_avg_count)
+        spectral_aline_avg, spectral_bline_avg = self.spectral_avg_used()
+        shape = data_shape(
+            self.ui,
+            data,
+            raw,
+            acq_mode,
+            gpu_avg_count,
+            spectral_aline_avg,
+            spectral_bline_avg,
+        )
         data_to_save = self.save_data(data)
         Xpixels = shape.x_pixels
         Yrpt = shape.repeat_count

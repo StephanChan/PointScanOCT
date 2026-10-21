@@ -36,6 +36,8 @@ class DnSActionField:
         is_final=True,
         profile=None,
         output_buffer_token=None,
+        spectral_aline_avg=1,
+        spectral_bline_avg=1,
     ):
         super().__init__()
         self.action = action
@@ -52,6 +54,9 @@ class DnSActionField:
         self.is_final = bool(is_final)
         self.profile = {} if profile is None else dict(profile)
         self.output_buffer_token = output_buffer_token
+        # 已在光谱域完成的平均倍数（1 表示由 DnS 在显示前自己做）
+        self.spectral_aline_avg = int(spectral_aline_avg)
+        self.spectral_bline_avg = int(spectral_bline_avg)
 
 
 class GPUActionField:
@@ -68,6 +73,8 @@ class GPUActionField:
         package_frame_count=None,
         package_total_frames=None,        is_final=True,
         profile=None,
+        spectral_aline_avg=1,
+        spectral_bline_avg=1,
     ):
         super().__init__()
         self.action = action
@@ -82,6 +89,9 @@ class GPUActionField:
         self.package_total_frames = package_total_frames
         self.is_final = bool(is_final)
         self.profile = {} if profile is None else dict(profile)
+        # 已在光谱域完成的平均倍数（1 表示由 DnS 在显示前自己做）
+        self.spectral_aline_avg = int(spectral_aline_avg)
+        self.spectral_bline_avg = int(spectral_bline_avg)
 
 
 class DActionField:

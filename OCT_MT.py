@@ -89,6 +89,8 @@ DatabackQueue = Queue()
 MemoryFreeQueue = Queue()
 # DnS returns GPU pinned-output buffers only after processing/saving is done.
 PinnedOutputFreeQueue = Queue()
+# GPU 线程做完整卷 Y 陷波后把结果放回这里（DnS 线程在扫描结束时阻塞等待）
+VolumeResultQueue = Queue()
 
         
 # Thread wrappers inject shared queues, memory, logging, and the UI bridge.
@@ -145,6 +147,7 @@ class GPUThread_2(GPUThread):
             self.GPU2weaverQueue = GPU2weaverQueue
             self.MemoryFreeQueue = MemoryFreeQueue
             self.PinnedOutputFreeQueue = PinnedOutputFreeQueue
+            self.VolumeResultQueue = VolumeResultQueue
             self.log = log
             self.SIM = SIM
             self.AMPLIFICATION = 100#AMPLIFICATION
@@ -172,6 +175,8 @@ class DnSThread_2(DnSThread):
         self.log = log
         self.use_maya = use_maya
         self.PinnedOutputFreeQueue = PinnedOutputFreeQueue
+        self.GPUQueue = GPUQueue
+        self.VolumeResultQueue = VolumeResultQueue
         self.ui_bridge = None
         
 
@@ -203,6 +208,7 @@ class GUI(MainWindow):
         if hasattr(self.ui, "FFTresults"):
             self.ui.FFTresults.clear()
             self.ui.FFTresults.addItem("AMP")
+            self.ui.FFTresults.addItem("AMP+PHASE")
         # set window length for FFT
         # self.ui.PostSamples.valueChanged.connect(self.update_Dispersion)
         # self.ui.PreSamples.valueChanged.connect(self.update_Dispersion)

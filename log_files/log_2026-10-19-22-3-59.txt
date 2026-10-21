@@ -1,0 +1,27 @@
+Stage position updated.
+Interpolation/dispersion folder not found: E:\PointScanOCT\dispersion\OKsysteminitializing AiKe IKap camera...
+
+No background selected; using zero background.
+AiKe camera init failed, using camera simulation. Error: No IKap camera found.
+<class 'Exception'>
+Stage/galvo command failed. This action was skipped.
+Traceback (most recent call last):
+  File "D:\CODES\PointScanOCT\PointScanOCT\ThreadAODO_art.py", line 229, in QueueOut
+    self.ConfigTask()
+  File "D:\CODES\PointScanOCT\PointScanOCT\ThreadAODO_art.py", line 465, in ConfigTask
+    self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
+  File "C:\Program Files (x86)\ART Technology\ART-DAQ\Samples\Python\LIB\artdaq\_task_modules\ao_channel_collection.py", line 154, in add_ao_voltage_chan
+    check_for_error(error_code)
+  File "C:\Program Files (x86)\ART Technology\ART-DAQ\Samples\Python\LIB\artdaq\errors.py", line 127, in check_for_error
+    raise DaqError(error_buffer.value.decode("utf-8"), error_code)
+artdaq.errors.DaqError: Device identifier is invalid.
+Device Specified: Galvo
+Suggested Device(s): 
+Task name: AOtask
+
+Status Code: -200220
+
+Exiting all threads
+Closing: stopping acquisition and worker threads...
+AiKe IKap camera thread exited.
+Close delayed: waiting for Weaver thread(s).

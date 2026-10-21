@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
         if hasattr(self.ui, "FFTresults"):
             self.ui.FFTresults.clear()
             self.ui.FFTresults.addItem("AMP")
+            self.ui.FFTresults.addItem("AMP+PHASE")
         self.LoadSettings("config.ini")
         if hasattr(self.ui, "Camera"):
             for camera_name in ("AiKe", "AK", "IKap", "PL4KCL-200KT"):

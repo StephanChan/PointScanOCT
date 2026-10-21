@@ -31,15 +31,30 @@ def x_pixels(ui):
     return x_pixel_count(ui)
 
 
-def repeat_count(ui, data=None, raw=False, acq_mode=None, gpu_avg_count=1):
-    configured_bline_avg = max(1, int(ui.BlineAVG.value()))
+def repeat_count(
+    ui,
+    data=None,
+    raw=False,
+    acq_mode=None,
+    gpu_avg_count=1,
+    aline_avg_applied=1,
+    bline_avg_applied=1,
+):
+    """重复次数。
+
+    ``aline_avg_applied`` / ``bline_avg_applied`` 表示这些平均已经在光谱域
+    （FFT 之前）做完了，因此这里的 X 像素数与重复次数都要按已平均后的粒度算。
+    """
+    aline_avg_applied = max(1, int(aline_avg_applied))
+    bline_avg_applied = max(1, int(bline_avg_applied))
+    configured_bline_avg = max(1, int(ui.BlineAVG.value()) // bline_avg_applied)
     if data is None or getattr(data, "ndim", 0) < 1:
         if raw:
             return configured_bline_avg
         return max(1, configured_bline_avg // max(1, int(gpu_avg_count)))
 
     frame_count = int(data.shape[0])
-    x_count = max(1, x_pixels(ui))
+    x_count = max(1, x_pixels(ui) // aline_avg_applied)
     if acq_mode in (AcqTypes.FINITE_BSCAN, AcqTypes.CONTINUOUS_BLINE, AcqTypes.X_FREQUENCY):
         return max(1, frame_count // x_count)
     if not raw:
@@ -52,25 +67,40 @@ def repeat_count(ui, data=None, raw=False, acq_mode=None, gpu_avg_count=1):
     return frame_count
 
 
-def cscan_y_count(ui, data, raw=False):
+def cscan_y_count(ui, data, raw=False, aline_avg_applied=1, bline_avg_applied=1):
     frame_count = int(data.shape[0])
-    x_count = max(1, x_pixels(ui))
-    configured_bline_avg = max(1, int(ui.BlineAVG.value()))
+    x_count = max(1, x_pixels(ui) // max(1, int(aline_avg_applied)))
+    configured_bline_avg = max(1, int(ui.BlineAVG.value()) // max(1, int(bline_avg_applied)))
     frames_per_y = max(1, x_count * configured_bline_avg)
     if frame_count >= frames_per_y:
         return frame_count // frames_per_y
     return frame_count
 
 
-def data_shape(ui, data=None, raw=False, acq_mode=None, gpu_avg_count=1):
+def data_shape(
+    ui,
+    data=None,
+    raw=False,
+    acq_mode=None,
+    gpu_avg_count=1,
+    aline_avg_applied=1,
+    bline_avg_applied=1,
+):
     frame_count = 0
     if data is not None and getattr(data, "ndim", 0) >= 1:
         frame_count = int(data.shape[0])
     return DataShapeInfo(
         frame_count=frame_count,
-        y_pixels=cscan_y_count(ui, data, raw) if data is not None else max(1, int(ui.Ypixels.value())),
-        repeat_count=repeat_count(ui, data, raw, acq_mode, gpu_avg_count),
-        x_pixels=x_pixels(ui),
+        y_pixels=(
+            cscan_y_count(ui, data, raw, aline_avg_applied, bline_avg_applied)
+            if data is not None
+            else max(1, int(ui.Ypixels.value()))
+        ),
+        repeat_count=repeat_count(
+            ui, data, raw, acq_mode, gpu_avg_count, aline_avg_applied, bline_avg_applied
+        ),
+        x_pixels=max(1, x_pixels(ui) // max(1, int(aline_avg_applied))),
         z_pixels=depth_pixels(ui, data, raw),
     )
+
 

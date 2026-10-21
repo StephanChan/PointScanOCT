@@ -103,6 +103,12 @@ class GPUThread(QThread):
         self.active_tasks = 0
         self.return_processed_to_weaver = False
         self.interp = False
+        # 光谱域（FFT 之前）已经做掉的 A-line / B-line 平均倍数，1 = 未做
+        self._spectral_aline_avg = 1
+        self._spectral_bline_avg = 1
+        # 整卷 Y 向陷波（由 DnS 在扫描结束时提交到本线程）
+        self._y_notch_weights_cache = {}
+        self.y_notch_z_chunk = 32
 
     def definterp(self):
         self.interp_kernel = cupy.RawKernel(r'''
@@ -146,6 +152,8 @@ class GPUThread(QThread):
                     self.FFT_actions += 1
                 elif self.item.action == GPUActions.CLEAR:
                     self.DnSQueue.put(DnSActionField(DnSActions.CLEAR))
+                elif self.item.action == GPUActions.Y_NOTCH_VOLUME:
+                    self.filter_volume_y_notch(self.item)
                 elif self.item.action == GPUActions.UPDATE_DISPERSION:
                     self.update_Dispersion()
                 elif self.item.action == GPUActions.UPDATE_BACKGROUND:
@@ -435,7 +443,7 @@ class GPUThread(QThread):
         in as the frame count.
         """
         alines = int(alines)
-        x_pixels = max(1, int(x_pixel_count(self.ui)))
+        x_pixels = max(1, int(x_pixel_count(self.ui)) // max(1, int(getattr(self, "_spectral_aline_avg", 1))))
         if alines <= 0 or x_pixels < 2:
             return None
         if alines % x_pixels:
@@ -552,6 +560,69 @@ class GPUThread(QThread):
     @staticmethod
     def averaged_frame_count(frame_count, avg_count):
         return int(frame_count) // max(1, int(avg_count))
+
+    # -- 光谱域 A-line / B-line 平均 --------------------------------------- #
+    # 采集顺序（GenAODO）：[Y 行][BlineAVG 次重复][X 位置][AlineAVG 次重复][光谱]。
+    # 在光谱域做平均就是对 [Y][重复][X][Aline] 求均值；FFT 是线性运算，等价于对
+    # 复数 FFT 结果求均值，但平均后的数据量更小、噪声底更低。
+    def spectral_avg_factors(self):
+        return (
+            max(1, int(self.ui.AlineAVG.value())),
+            max(1, int(self.ui.BlineAVG.value())),
+        )
+
+    def spectral_avg_applies(self):
+        """KX / Xfrequency 诊断模式不参与光谱域平均。"""
+        if self.current_kx_display_enabled() or self.current_x_frequency_mode():
+            return False
+        aline_avg, bline_avg = self.spectral_avg_factors()
+        return aline_avg > 1 or bline_avg > 1
+
+    def spectral_avg_plan(self, frame_count):
+        """能整除时才在光谱域平均，返回实际生效的 (Aline 倍数, Bline 倍数)。"""
+        if not self.spectral_avg_applies():
+            return 1, 1
+        aline_avg, bline_avg = self.spectral_avg_factors()
+        group_rows = max(1, x_pixel_count(self.ui)) * bline_avg
+        if int(frame_count) < group_rows:
+            return 1, 1
+        return aline_avg, bline_avg
+
+    @staticmethod
+    def spectral_output_frame_count(frame_count, aline_avg, bline_avg, x_pixels):
+        """光谱域平均后剩下的 A-line 行数（不足一组的余数被丢弃）。"""
+        aline_avg = max(1, int(aline_avg))
+        bline_avg = max(1, int(bline_avg))
+        group_rows = max(1, int(x_pixels)) * bline_avg
+        complete = (int(frame_count) // group_rows) * group_rows
+        return complete // (aline_avg * bline_avg)
+
+    @staticmethod
+    def apply_spectral_average(xp, spectra, x_pixels, aline_avg, bline_avg):
+        """把 (rows, samples) 光谱按 [Y][Bline 重复][X 位置][Aline 重复] 平均。
+
+        ``xp`` 传 ``cupy`` 或 ``numpy``，两条路径共用同一套 reshape 规则。
+        """
+        aline_avg = max(1, int(aline_avg))
+        bline_avg = max(1, int(bline_avg))
+        x_pixels = max(1, int(x_pixels))
+        if x_pixels % aline_avg:
+            raise ValueError(
+                "AlineAVG must divide the A-lines per B-line: "
+                f"A-lines={x_pixels}, AlineAVG={aline_avg}"
+            )
+        x_positions = x_pixels // aline_avg
+        group_rows = x_pixels * bline_avg
+        rows = int(spectra.shape[0])
+        complete = (rows // group_rows) * group_rows
+        if complete <= 0:
+            return spectra[:0]
+        samples = int(spectra.shape[-1])
+        block = spectra[:complete].reshape(
+            complete // group_rows, bline_avg, x_positions, aline_avg, samples
+        )
+        averaged = block.mean(axis=3, dtype=xp.float32).mean(axis=1, dtype=xp.float32)
+        return averaged.reshape(complete // (aline_avg * bline_avg), samples)
 
     @staticmethod
     def allocate_pinned_array(shape, dtype=np.float32):
@@ -752,6 +823,9 @@ class GPUThread(QThread):
         slot_shape = self.Memory[memory_slot].shape
         valid_input_frames = self.valid_input_frame_count(memory_slot)
         gpu_avg_count = self.current_gpu_avg_count(valid_input_frames)
+        spectral_aline_avg, spectral_bline_avg = self.spectral_avg_plan(valid_input_frames)
+        self._spectral_aline_avg = spectral_aline_avg
+        self._spectral_bline_avg = spectral_bline_avg
         effective_frames = self.averaged_frame_count(valid_input_frames, gpu_avg_count) * gpu_avg_count
         if effective_frames <= 0:
             raise ValueError(f"No complete frame group available for GPU averaging by {gpu_avg_count}.")
@@ -762,13 +836,26 @@ class GPUThread(QThread):
             )
         chunk_frames = self.gpu_fft_chunk_frames(effective_frames, gpu_avg_count)
         background_reference_gpu = self.determine_background_gpu(memory_slot)
-        output_frames = self.averaged_frame_count(effective_frames, gpu_avg_count)
+        output_frames = self.spectral_output_frame_count(
+            self.averaged_frame_count(effective_frames, gpu_avg_count),
+            spectral_aline_avg,
+            spectral_bline_avg,
+            x_pixel_count(self.ui),
+        )
+        if output_frames <= 0:
+            raise ValueError(
+                "Spectra do not contain one complete averaging group: "
+                f"frames={effective_frames}, AlineAVG={spectral_aline_avg}, "
+                f"BlineAVG={spectral_bline_avg}, X pixels={x_pixel_count(self.ui)}."
+            )
         self.gpu_timing_end(timing, "prepare_request", request_start)
 
         pinned_start = time.perf_counter()
         slot_x_count = int(slot_shape[1]) if len(slot_shape) >= 3 else 1
+        complex_output = self.current_fft_result_mode() == "AMP+PHASE"
+        output_dtype = np.complex64 if complex_output else np.float32
         self.data_CPU, output_buffer_token, allocation_seconds = self.acquire_pinned_output_buffer(
-            (output_frames, slot_x_count, output_range), np.float32
+            (output_frames, slot_x_count, output_range), output_dtype
         )
         pinned_elapsed = time.perf_counter() - pinned_start
         timing["pinned_buffer_allocate"] = timing.get("pinned_buffer_allocate", 0.0) + allocation_seconds
@@ -813,6 +900,8 @@ class GPUThread(QThread):
             is_final=getattr(self.item, "is_final", True),
             profile=package_profile,
             output_buffer_token=output_buffer_token,
+            spectral_aline_avg=spectral_aline_avg,
+            spectral_bline_avg=spectral_bline_avg,
         )
         an_action.profile["dns_queue_put_s"] = time.perf_counter()
         self.DnSQueue.put(an_action)
@@ -913,6 +1002,14 @@ class GPUThread(QThread):
         total_frames = max(1, int(total_frames))
         avg_count = max(1, int(avg_count))
         requested = max(avg_count, int(self.gpu_chunk_frames))
+        if self.spectral_avg_applies():
+            # 每个块必须覆盖完整的 Y 行（AlineAVG*BlineAVG 组），否则跨块的
+            # A-line 无法在光谱域平均。
+            bline_avg = max(1, int(self.ui.BlineAVG.value()))
+            group_rows = max(1, x_pixel_count(self.ui)) * bline_avg
+            requested = max(requested, group_rows)
+            requested = ((requested + group_rows - 1) // group_rows) * group_rows
+            return min(total_frames, requested)
         if (
             self.current_x_notch_enabled()
             and not self.current_kx_display_enabled()
@@ -1023,7 +1120,12 @@ class GPUThread(QThread):
             chunk = self.Memory[memory_slot][input_start:input_end]
             if chunk.ndim == 2:
                 chunk = chunk[:, np.newaxis, :]
-            output_count = self.averaged_frame_count(input_end - input_start, gpu_avg_count)
+            output_count = self.spectral_output_frame_count(
+                self.averaged_frame_count(input_end - input_start, gpu_avg_count),
+                int(getattr(self, "_spectral_aline_avg", 1)),
+                int(getattr(self, "_spectral_bline_avg", 1)),
+                x_pixel_count(self.ui),
+            )
             output_end = output_start + output_count
             host_out = self.data_CPU[output_start:output_end, :, :]
 
@@ -1132,6 +1234,17 @@ class GPUThread(QThread):
         step_start = self.gpu_timing_start(stream)
         alines = y_gpu.shape[0] * y_gpu.shape[1]
         y_gpu = y_gpu.reshape([alines, samples])
+        spectral_aline_avg = int(getattr(self, "_spectral_aline_avg", 1))
+        spectral_bline_avg = int(getattr(self, "_spectral_bline_avg", 1))
+        if spectral_aline_avg > 1 or spectral_bline_avg > 1:
+            y_gpu = self.apply_spectral_average(
+                cupy,
+                y_gpu,
+                x_pixel_count(self.ui),
+                spectral_aline_avg,
+                spectral_bline_avg,
+            )
+            output_frames = int(y_gpu.shape[0])
         self.gpu_timing_end(timing, "reshape_alines", step_start, stream)
         keep_alive.append(y_gpu)
 
@@ -1195,7 +1308,11 @@ class GPUThread(QThread):
             self.gpu_timing_end(timing, "select_depth_result", step_start, stream)
 
             step_start = self.gpu_timing_start(stream)
-            data_gpu = cupy.abs(data_gpu)
+            if self.current_fft_result_mode() == "AMP+PHASE":
+                # 复数结果原样下传：显示取幅度，保存写 幅度+相位 交错
+                pass
+            else:
+                data_gpu = cupy.abs(data_gpu)
             self.gpu_timing_end(timing, "abs_magnitude", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
@@ -1236,6 +1353,57 @@ class GPUThread(QThread):
                 )
             )
         return data_gpu, keep_alive
+
+    # -- 整卷 Y 向陷波（在 GPU 线程上执行）--------------------------------- #
+    def y_notch_weights_gpu(self, y_pixels, half_width_fraction):
+        """Y 向带阻权重：native FFT 顺序（0 频在两端），截止 = fraction × Y Nyquist。"""
+        y_pixels = max(1, int(y_pixels))
+        fraction = float(np.clip(float(half_width_fraction), 0.0, 1.0))
+        key = (y_pixels, round(fraction, 6))
+        cached = self._y_notch_weights_cache.get(key)
+        if cached is not None:
+            return cached
+        freq_axis = cupy.fft.fftfreq(y_pixels).astype(cupy.float32)
+        weights = (cupy.abs(freq_axis) > cupy.float32(fraction * 0.5)).astype(cupy.float32)
+        self._y_notch_weights_cache = {key: weights}
+        return weights
+
+    def filter_volume_y_notch(self, item):
+        """整卷 (Y, X, Z) 的 ky 域带阻，按 Z 分块在 GPU 上算，结果放回 VolumeResultQueue。
+
+        复数输入保持复数输出（幅度+相位都留），实数输入取幅度；只有填满的 Y 行才应
+        传进来（调用方按已填行裁剪），以免零填充尾部产生边缘伪影。
+        """
+        result_queue = getattr(self, "VolumeResultQueue", None)
+        volume = getattr(item, "volume", None)
+        if result_queue is None:
+            raise RuntimeError("VolumeResultQueue is not wired into the GPU thread.")
+        if not isinstance(volume, np.ndarray) or volume.ndim != 3:
+            result_queue.put({"volume": None, "backend": None, "error": "volume must be (Y, X, Z)"})
+            return
+        fraction = float(getattr(item, "half_width_fraction", 0.25))
+        complex_input = volume.dtype.kind == "c"
+        out = np.empty(volume.shape, dtype=np.complex64 if complex_input else np.float32)
+        weights = self.y_notch_weights_gpu(volume.shape[0], fraction)
+        z_pixels = int(volume.shape[2])
+        chunk = max(1, int(self.y_notch_z_chunk))
+        try:
+            for start in range(0, z_pixels, chunk):
+                stop = min(start + chunk, z_pixels)
+                # (Y, X, z) -> (z, X, Y)：把 Y 放到最后一维，沿 Y 做 FFT
+                slab = cupy.ascontiguousarray(
+                    cupy.asarray(volume[:, :, start:stop]).transpose(2, 1, 0)
+                )
+                spectrum = cupy.fft.fft(slab, axis=-1)
+                spectrum *= weights[cupy.newaxis, cupy.newaxis, :]
+                filtered = cupy.fft.ifft(spectrum, axis=-1)
+                if not complex_input:
+                    filtered = cupy.abs(filtered)
+                out[:, :, start:stop] = cupy.asnumpy(filtered.transpose(2, 1, 0))
+            result_queue.put({"volume": out, "backend": "GPU", "error": None})
+        except Exception as error:
+            print("GPU Y notch failed:", error)
+            result_queue.put({"volume": None, "backend": None, "error": str(error)})
 
     def copy_gpu_to_host_async(self, data_gpu, host_out, stream):
         try:
